@@ -7,21 +7,26 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
+    "test": "tsx src/services/redis/__tests__/testRedisService.ts && tsx src/services/redis/__tests__/testRedisLock.ts && tsx src/middleware/__tests__/testRateLimiter.ts && tsx src/socket/__tests__/testSocketRedisAdapter.ts && tsx src/repositories/redis/__tests__/testRealtimeStateRepository.ts && tsx src/middleware/__tests__/testSecurity.ts && tsx src/game-engine/ludo/__tests__/testLudoBoard.ts && tsx src/game-engine/ludo/__tests__/testLudoTokenService.ts && tsx src/game-engine/ludo/__tests__/testLudoMovementService.ts && tsx src/game-engine/ludo/__tests__/testLudoValidMovesService.ts && tsx src/game-engine/ludo/__tests__/testLudoDiceService.ts && tsx src/game-engine/ludo/__tests__/testLudoTurnService.ts && tsx src/game-engine/ludo/__tests__/testLudoGameActions.ts && tsx src/game-engine/ludo/__tests__/testLudoCaptureService.ts && tsx src/game-engine/ludo/__tests__/testLudoTurnResolutionService.ts && tsx src/game-engine/ludo/__tests__/testLudoWinnerService.ts && tsx src/game-engine/ludo/__tests__/testLudoGameEngine.ts && tsx src/socket/__tests__/testLudoSocketHandler.ts && tsx src/repositories/redis/__tests__/testLudoRedisPersistence.ts && tsx src/services/ludo/__tests__/testLudoMatchHistoryService.ts && tsx src/socket/__tests__/testLudoReconnectResume.ts && tsx src/game-engine/ludo/__tests__/testLudoEndToEndQA.ts && tsx src/socket/__tests__/testLudoBrowserSmoke.ts",
     "db:migrate": "tsx src/database/migrate.ts",
     "db:seed": "tsx src/database/seed.ts",
     "db:undo": "tsx src/database/undo.ts"
   },
   "dependencies": {
+    "@socket.io/redis-adapter": "^8.3.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "express-rate-limit": "^7.5.0",
     "helmet": "^8.0.0",
+    "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.12.0",
     "sequelize": "^6.37.5",
     "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.3",
+    "sqlite3": "^6.0.1",
     "zod": "^3.24.2"
   },
   "devDependencies": {

@@ -14,12 +14,14 @@ import {
   refreshTokenSchema,
 } from '../../validators/authValidators';
 
+import { authRateLimiter } from '../../middleware/rateLimiter';
+
 const router = Router();
 
-router.post('/register', validateBody(registerSchema), register);
-router.post('/login', validateBody(loginSchema), login);
+router.post('/register', authRateLimiter, validateBody(registerSchema), register);
+router.post('/login', authRateLimiter, validateBody(loginSchema), login);
 router.post('/logout', authenticateToken, logout);
 router.get('/me', authenticateToken, getMe);
-router.post('/refresh', validateBody(refreshTokenSchema), refresh);
+router.post('/refresh', authRateLimiter, validateBody(refreshTokenSchema), refresh);
 
 export default router;

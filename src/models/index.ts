@@ -14,6 +14,8 @@ import LeagueMatch from './LeagueMatch';
 import Leaderboard from './Leaderboard';
 import Notification from './Notification';
 import Session from './Session';
+import LudoMatch from './LudoMatch';
+import LudoMatchPlayer from './LudoMatchPlayer';
 
 // User & Profile (1:1)
 User.hasOne(Profile, { foreignKey: 'userId', as: 'profile', onDelete: 'CASCADE' });
@@ -78,6 +80,10 @@ LeaguePlayer.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 League.hasMany(LeagueMatch, { foreignKey: 'leagueId', as: 'matches', onDelete: 'CASCADE' });
 LeagueMatch.belongsTo(League, { foreignKey: 'leagueId', as: 'league' });
 
+// LudoMatch & LudoMatchPlayer (1:N)
+LudoMatch.hasMany(LudoMatchPlayer, { foreignKey: 'matchId', as: 'players', onDelete: 'CASCADE' });
+LudoMatchPlayer.belongsTo(LudoMatch, { foreignKey: 'matchId', as: 'match' });
+
 export {
   User,
   Profile,
@@ -95,4 +101,6 @@ export {
   Leaderboard,
   Notification,
   Session,
+  LudoMatch,
+  LudoMatchPlayer,
 };
