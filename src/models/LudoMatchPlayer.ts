@@ -6,6 +6,7 @@ export interface LudoMatchPlayerAttributes {
   matchId: string;
   userId: string;
   color: string;
+  playerType?: 'HUMAN' | 'BOT';
   finalPosition?: number | null;
   joinedAt?: Date | null;
   leftAt?: Date | null;
@@ -15,7 +16,7 @@ export interface LudoMatchPlayerAttributes {
 
 export type LudoMatchPlayerCreationAttributes = Optional<
   LudoMatchPlayerAttributes,
-  'id' | 'finalPosition' | 'joinedAt' | 'leftAt' | 'createdAt' | 'updatedAt'
+  'id' | 'playerType' | 'finalPosition' | 'joinedAt' | 'leftAt' | 'createdAt' | 'updatedAt'
 >;
 
 export class LudoMatchPlayer
@@ -26,6 +27,7 @@ export class LudoMatchPlayer
   public declare matchId: string;
   public declare userId: string;
   public declare color: string;
+  public declare playerType: 'HUMAN' | 'BOT';
   public declare finalPosition: number | null;
   public declare joinedAt: Date | null;
   public declare leftAt: Date | null;
@@ -51,6 +53,11 @@ LudoMatchPlayer.init(
     color: {
       type: DataTypes.STRING,
       allowNull: false,
+    },
+    playerType: {
+      type: DataTypes.ENUM('HUMAN', 'BOT'),
+      allowNull: false,
+      defaultValue: 'HUMAN',
     },
     finalPosition: {
       type: DataTypes.INTEGER,

@@ -8,13 +8,15 @@ import { LudoTurnResolutionService } from '../game-engine/ludo/LudoTurnResolutio
 import redisLockService from '../services/redis/redisLock';
 import ludoGameStateRepository from '../repositories/redis/LudoGameStateRepository';
 import LudoMatchHistoryService from '../services/ludo/LudoMatchHistoryService';
-
 import { LudoTurnService } from '../game-engine/ludo/LudoTurnService';
+import { LudoBotService } from '../game-engine/ludo/bot/LudoBotService';
+import { LudoMatchmakingService } from '../modules/ludo/matchmaking/LudoMatchmakingService';
+import env from '../config/env';
 
 // In-memory fallback map for environments without Redis
 export const activeLudoGames = new Map<string, LudoGameState>();
 
-// Server-side turn timeout timer registry (15 seconds per turn)
+// Server-side turn timeout timer registry (30 seconds per turn)
 export const gameTurnTimers = new Map<string, NodeJS.Timeout>();
 
 export function clearGameTurnTimer(gameId: string): void {
@@ -26,8 +28,8 @@ export function clearGameTurnTimer(gameId: string): void {
 }
 
 /**
- * Schedule server-authoritative turn timeout (15s limit).
- * If a player fails to take their turn within 15 seconds, turn auto-advances.
+ * Schedule server-authoritative turn timeout (30s limit).
+ * If a player fails to take their turn within 30 seconds, turn auto-advances.
  * If a player misses 3 consecutive turns, they are disqualified and the remaining player is declared WINNER!
  */
 export function scheduleTurnTimer(
@@ -140,13 +142,18 @@ export function scheduleTurnTimer(
           currentPlayerId: updatedState.currentPlayerId,
           turnNumber: updatedState.turnNumber,
           turnStartedAt: updatedState.turnStartedAt,
-          turnTimeLimit: updatedState.turnTimeLimit || 15,
+          turnTimeLimit: updatedState.turnTimeLimit || 30,
         });
 
         io.to(room).emit('ludo:state_updated', { gameId, gameState: updatedState });
 
-        // Schedule timer for the new turn
-        scheduleTurnTimer(io, gameId, updatedState.turnNumber!, updatedState.turnTimeLimit || 15);
+        // If next player is BOT, trigger automated bot turn
+        if (nextPlayer && nextPlayer.playerType === 'BOT') {
+          executeBotTurn(io, gameId);
+        } else {
+          // Schedule timer for the new human turn
+          scheduleTurnTimer(io, gameId, updatedState.turnNumber!, updatedState.turnTimeLimit || 30);
+        }
       } finally {
         if (lockRes && lockRes.acquired && lockRes.token) {
           await redisLockService.releaseLock(lockKey, lockRes.token).catch(() => {});
@@ -185,7 +192,6 @@ export function getAuthenticatedUserId(socket: Socket): string | null {
   if (socket.data && socket.data.userId) {
     return socket.data.userId;
   }
-  // Allow test / dev fallback socket.id if explicitly permitted
   return socket.id || null;
 }
 
@@ -220,9 +226,266 @@ async function saveAuthoritativeState(gameState: LudoGameState): Promise<boolean
 }
 
 /**
+ * Server-authoritative Bot Turn Orchestrator.
+ * Simulates thinking delay (700-1200ms), rolls dice through LudoGameEngine, selects tactical move, and executes turn.
+ */
+export async function executeBotTurn(io: SocketIOServer, gameId: string): Promise<void> {
+  const moveDelayMs = env.ludoBotMoveDelayMs || 900;
+
+  setTimeout(async () => {
+    const lockKey = LudoGameEngine.getGameLockKey(gameId);
+    let lockRes = null;
+    try {
+      lockRes = await redisLockService.acquireLock(lockKey, 4000);
+    } catch {}
+
+    try {
+      const gameState = await loadAuthoritativeState(gameId);
+      if (!gameState || gameState.status !== 'ACTIVE') return;
+
+      const botPlayer = gameState.players.find(
+        (p) => p.playerId === gameState.currentPlayerId && p.playerType === 'BOT'
+      );
+      if (!botPlayer) return;
+
+      const room = `ludo:game:${gameId}`;
+
+      // 1. Server-authoritative Dice Roll for BOT
+      const rollRes = LudoGameEngine.rollDice(gameState, botPlayer.playerId);
+      if (!rollRes.success || !rollRes.gameState) return;
+
+      await saveAuthoritativeState(rollRes.gameState);
+
+      io.to(room).emit('ludo:dice_rolled', {
+        gameId,
+        playerId: botPlayer.playerId,
+        diceValue: rollRes.diceValue,
+        validMoves: rollRes.validMoves,
+        gameState: rollRes.gameState,
+      });
+      io.to(room).emit('ludo:state_updated', { gameId, gameState: rollRes.gameState });
+
+      // 2. Handle NO valid moves
+      if (!rollRes.validMoves || rollRes.validMoves.length === 0) {
+        if (rollRes.diceValue === 6) {
+          // Extra turn on 6: reroll after delay
+          setTimeout(async () => {
+            const stateForReroll: LudoGameState = {
+              ...rollRes.gameState!,
+              diceRolled: false,
+              diceValue: null,
+            };
+            await saveAuthoritativeState(stateForReroll);
+            io.to(room).emit('ludo:state_updated', { gameId, gameState: stateForReroll });
+            executeBotTurn(io, gameId);
+          }, 1000);
+        } else {
+          // Resolve turn and rotate to next player
+          const turnResolution = LudoTurnResolutionService.resolveTurn(
+            rollRes.gameState,
+            botPlayer.playerId,
+            rollRes.diceValue || 0
+          );
+
+          setTimeout(async () => {
+            await saveAuthoritativeState(turnResolution.updatedGameState);
+            io.to(room).emit('ludo:turn_changed', {
+              gameId,
+              currentPlayerId: turnResolution.updatedGameState.currentPlayerId,
+              turnNumber: turnResolution.updatedGameState.turnNumber,
+              turnStartedAt: turnResolution.updatedGameState.turnStartedAt,
+              turnTimeLimit: turnResolution.updatedGameState.turnTimeLimit || 30,
+            });
+            io.to(room).emit('ludo:state_updated', {
+              gameId,
+              gameState: turnResolution.updatedGameState,
+            });
+
+            const nextPlayer = turnResolution.updatedGameState.players.find(
+              (p) => p.playerId === turnResolution.updatedGameState.currentPlayerId
+            );
+            if (nextPlayer && nextPlayer.playerType === 'BOT') {
+              executeBotTurn(io, gameId);
+            } else {
+              scheduleTurnTimer(
+                io,
+                gameId,
+                turnResolution.updatedGameState.turnNumber || 1,
+                turnResolution.updatedGameState.turnTimeLimit || 30
+              );
+            }
+          }, 1000);
+        }
+        return;
+      }
+
+      // 3. Select Bot Move based on Difficulty (EASY / MEDIUM / HARD)
+      setTimeout(async () => {
+        let moveLock = null;
+        try {
+          moveLock = await redisLockService.acquireLock(lockKey, 4000);
+        } catch {}
+
+        try {
+          const currentState = await loadAuthoritativeState(gameId);
+          if (!currentState || currentState.status !== 'ACTIVE' || !currentState.diceRolled) return;
+
+          const chosenMove = LudoBotService.selectMove(
+            currentState,
+            botPlayer.playerId,
+            rollRes.validMoves || [],
+            botPlayer.botDifficulty || 'MEDIUM'
+          );
+          if (!chosenMove) return;
+
+          const moveRes = LudoGameEngine.moveToken(currentState, botPlayer.playerId, chosenMove.tokenId);
+          if (!moveRes.success || !moveRes.gameState) return;
+
+          await saveAuthoritativeState(moveRes.gameState);
+
+          io.to(room).emit('ludo:token_moved', {
+            gameId,
+            playerId: botPlayer.playerId,
+            tokenId: chosenMove.tokenId,
+            from: moveRes.moveResult?.fromPosition,
+            to: moveRes.moveResult?.toPosition,
+            state: moveRes.moveResult?.toCategory,
+          });
+
+          if (moveRes.captureResult?.captured) {
+            const capturedTokenId = moveRes.captureResult.capturedTokenIds[0];
+            const capturedPlayer = moveRes.gameState.players.find((p) =>
+              p.tokens.some((t) => t.tokenId === capturedTokenId)
+            );
+            io.to(room).emit('ludo:token_captured', {
+              gameId,
+              capturingPlayerId: botPlayer.playerId,
+              capturingTokenId: chosenMove.tokenId,
+              capturedPlayerId: capturedPlayer?.playerId || null,
+              capturedTokenId: capturedTokenId || null,
+              position: moveRes.captureResult.position,
+            });
+          }
+
+          if (moveRes.isFinished) {
+            clearGameTurnTimer(gameId);
+            const winnerObj = moveRes.gameState!.players.find((p) => p.playerId === moveRes.winnerId);
+
+            LudoMatchHistoryService.createMatchResult(moveRes.gameState!).catch((err) => {
+              console.error(`⚠️ Failed to persist final match result for game ${gameId}:`, err);
+            });
+
+            io.to(room).emit('ludo:game_finished', {
+              gameId,
+              winnerId: moveRes.winnerId,
+              winnerColor: winnerObj?.color || null,
+              finishedAt: moveRes.gameState!.finishedAt || Date.now(),
+            });
+          } else {
+            const nextPlayer = moveRes.gameState!.players.find(
+              (p) => p.playerId === moveRes.gameState!.currentPlayerId
+            );
+
+            if (moveRes.turnResolution) {
+              io.to(room).emit('ludo:turn_changed', {
+                gameId,
+                currentPlayerId: moveRes.gameState!.currentPlayerId,
+                turnNumber: moveRes.gameState!.turnNumber,
+                turnStartedAt: moveRes.gameState!.turnStartedAt,
+                turnTimeLimit: moveRes.gameState!.turnTimeLimit || 30,
+              });
+            }
+
+            if (nextPlayer && nextPlayer.playerType === 'BOT') {
+              executeBotTurn(io, gameId);
+            } else {
+              scheduleTurnTimer(
+                io,
+                gameId,
+                moveRes.gameState!.turnNumber || 1,
+                moveRes.gameState!.turnTimeLimit || 30
+              );
+            }
+          }
+
+          io.to(room).emit('ludo:state_updated', {
+            gameId,
+            gameState: moveRes.gameState,
+          });
+        } finally {
+          if (moveLock && moveLock.acquired && moveLock.token) {
+            await redisLockService.releaseLock(lockKey, moveLock.token).catch(() => {});
+          }
+        }
+      }, 600);
+    } finally {
+      if (lockRes && lockRes.acquired && lockRes.token) {
+        await redisLockService.releaseLock(lockKey, lockRes.token).catch(() => {});
+      }
+    }
+  }, moveDelayMs);
+}
+
+/**
  * Register all server-authoritative Ludo Socket.IO event handlers.
  */
 export function registerLudoSocketHandlers(io: SocketIOServer, socket: Socket): void {
+  // 0. Matchmaking: Find Match (Human vs Human or Bot fallback)
+  socket.on('ludo:find_match', async (_data?: { mode?: string }, callback?: Function) => {
+    try {
+      const userId = getAuthenticatedUserId(socket);
+      if (!userId) {
+        return sendLudoError(socket, 'UNAUTHORIZED', 'Authentication required to find a match');
+      }
+
+      // Clean up any stale active game state for this player before queueing a new match
+      for (const [gameId, activeGame] of activeLudoGames.entries()) {
+        if (
+          activeGame.status === 'ACTIVE' &&
+          activeGame.players.some((p) => p.userId === userId || p.playerId === userId)
+        ) {
+          // If previous game was with a BOT or abandoned, mark it finished
+          activeGame.status = 'FINISHED';
+          activeGame.finishedAt = Date.now();
+          clearGameTurnTimer(gameId);
+          await saveAuthoritativeState(activeGame);
+        }
+      }
+
+      const username = socket.data?.user?.username || socket.data?.username || userId;
+      const matchRes = await LudoMatchmakingService.findMatch(
+        { userId, socketId: socket.id, username },
+        io,
+        (gameId) => executeBotTurn(io, gameId)
+      );
+
+      if (typeof callback === 'function') {
+        callback(matchRes);
+      }
+    } catch (err: any) {
+      sendLudoError(socket, 'MATCHMAKING_ERROR', err.message || 'Failed to enter matchmaking');
+    }
+  });
+
+  // 0.1 Matchmaking: Cancel Match
+  socket.on('ludo:cancel_match', async (data?: { mode?: string }, callback?: Function) => {
+    try {
+      const userId = getAuthenticatedUserId(socket);
+      if (!userId) {
+        return sendLudoError(socket, 'UNAUTHORIZED', 'Authentication required to cancel matchmaking');
+      }
+
+      const cancelRes = await LudoMatchmakingService.cancelMatch(userId);
+      socket.emit('ludo:match_cancelled', { mode: data?.mode || 'CLASSIC', success: cancelRes.cancelled });
+
+      if (typeof callback === 'function') {
+        callback(cancelRes);
+      }
+    } catch (err: any) {
+      sendLudoError(socket, 'INVALID_REQUEST', err.message || 'Failed to cancel match');
+    }
+  });
+
   // 1. Create Game
   socket.on('ludo:create_game', async (data?: { mode?: string }, callback?: Function) => {
     try {
@@ -467,18 +730,26 @@ export function registerLudoSocketHandlers(io: SocketIOServer, socket: Socket): 
                 currentPlayerId: turnResolution.updatedGameState.currentPlayerId,
                 turnNumber: turnResolution.updatedGameState.turnNumber,
                 turnStartedAt: turnResolution.updatedGameState.turnStartedAt,
-                turnTimeLimit: turnResolution.updatedGameState.turnTimeLimit || 15,
+                turnTimeLimit: turnResolution.updatedGameState.turnTimeLimit || 30,
               });
               io.to(room).emit('ludo:state_updated', {
                 gameId: data.gameId,
                 gameState: turnResolution.updatedGameState,
               });
-              scheduleTurnTimer(
-                io,
-                data.gameId,
-                turnResolution.updatedGameState.turnNumber || 1,
-                turnResolution.updatedGameState.turnTimeLimit || 15
+
+              const nextPlayer = turnResolution.updatedGameState.players.find(
+                (p) => p.playerId === turnResolution.updatedGameState.currentPlayerId
               );
+              if (nextPlayer && nextPlayer.playerType === 'BOT') {
+                executeBotTurn(io, data.gameId);
+              } else {
+                scheduleTurnTimer(
+                  io,
+                  data.gameId,
+                  turnResolution.updatedGameState.turnNumber || 1,
+                  turnResolution.updatedGameState.turnTimeLimit || 30
+                );
+              }
             }, 1200);
           }
         }
@@ -569,12 +840,12 @@ export function registerLudoSocketHandlers(io: SocketIOServer, socket: Socket): 
           // Broadcast game_finished if winner declared
           if (moveRes.isFinished) {
             clearGameTurnTimer(data.gameId);
-            const winnerObj = moveRes.gameState.players.find(
+            const winnerObj = moveRes.gameState!.players.find(
               (p: LudoPlayer) => p.playerId === moveRes.winnerId
             );
 
             // Persist permanent match result in MySQL asynchronously
-            LudoMatchHistoryService.createMatchResult(moveRes.gameState).catch((err) => {
+            LudoMatchHistoryService.createMatchResult(moveRes.gameState!).catch((err) => {
               console.error(`⚠️ Failed to persist final match result for game ${data.gameId}:`, err);
             });
 
@@ -582,26 +853,34 @@ export function registerLudoSocketHandlers(io: SocketIOServer, socket: Socket): 
               gameId: data.gameId,
               winnerId: moveRes.winnerId,
               winnerColor: winnerObj?.color || null,
-              finishedAt: moveRes.gameState.finishedAt || Date.now(),
+              finishedAt: moveRes.gameState!.finishedAt || Date.now(),
             });
           } else {
-            // Schedule timer for next turn
-            scheduleTurnTimer(
-              io,
-              data.gameId,
-              moveRes.gameState.turnNumber || 1,
-              moveRes.gameState.turnTimeLimit || 15
+            const nextPlayer = moveRes.gameState!.players.find(
+              (p) => p.playerId === moveRes.gameState!.currentPlayerId
             );
 
             if (moveRes.turnResolution) {
               // Broadcast turn_changed
               io.to(room).emit('ludo:turn_changed', {
                 gameId: data.gameId,
-                currentPlayerId: moveRes.gameState.currentPlayerId,
-                turnNumber: moveRes.gameState.turnNumber,
-                turnStartedAt: moveRes.gameState.turnStartedAt,
-                turnTimeLimit: moveRes.gameState.turnTimeLimit || 15,
+                currentPlayerId: moveRes.gameState!.currentPlayerId,
+                turnNumber: moveRes.gameState!.turnNumber,
+                turnStartedAt: moveRes.gameState!.turnStartedAt,
+                turnTimeLimit: moveRes.gameState!.turnTimeLimit || 30,
               });
+            }
+
+            if (nextPlayer && nextPlayer.playerType === 'BOT') {
+              executeBotTurn(io, data.gameId);
+            } else {
+              // Schedule timer for next human turn
+              scheduleTurnTimer(
+                io,
+                data.gameId,
+                moveRes.gameState!.turnNumber || 1,
+                moveRes.gameState!.turnTimeLimit || 30
+              );
             }
           }
 
@@ -748,6 +1027,9 @@ export function registerLudoSocketHandlers(io: SocketIOServer, socket: Socket): 
   socket.on('disconnect', async () => {
     const userId = getAuthenticatedUserId(socket);
     if (!userId) return;
+
+    // Clean up any matchmaking queue state for this player
+    await LudoMatchmakingService.handleDisconnect(userId).catch(() => {});
 
     // Mark player as disconnected across games without destroying game state
     for (const [gameId, gameState] of activeLudoGames.entries()) {

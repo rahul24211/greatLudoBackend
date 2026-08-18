@@ -115,6 +115,60 @@ export class RedisService {
   }
 
   /**
+   * Delete multiple keys or single key
+   */
+  public async del(...keys: string[]): Promise<number> {
+    if (!keys || keys.length === 0) return 0;
+    try {
+      const client = getRedisClient();
+      return await client.del(...keys);
+    } catch (error) {
+      console.warn(`⚠️ Redis del error:`, error instanceof Error ? error.message : error);
+      return 0;
+    }
+  }
+
+  /**
+   * Push elements to the tail of a list
+   */
+  public async rpush(key: string, ...values: string[]): Promise<number> {
+    if (!values || values.length === 0) return 0;
+    try {
+      const client = getRedisClient();
+      return await client.rpush(key, ...values);
+    } catch (error) {
+      console.warn(`⚠️ Redis rpush error for key [${key}]:`, error instanceof Error ? error.message : error);
+      return 0;
+    }
+  }
+
+  /**
+   * Get elements from a list by range
+   */
+  public async lrange(key: string, start: number, stop: number): Promise<string[]> {
+    try {
+      const client = getRedisClient();
+      return await client.lrange(key, start, stop);
+    } catch (error) {
+      console.warn(`⚠️ Redis lrange error for key [${key}]:`, error instanceof Error ? error.message : error);
+      return [];
+    }
+  }
+
+  /**
+   * Remove elements from a list matching value
+   */
+  public async lrem(key: string, count: number, value: string): Promise<number> {
+    try {
+      const client = getRedisClient();
+      return await client.lrem(key, count, value);
+    } catch (error) {
+      console.warn(`⚠️ Redis lrem error for key [${key}]:`, error instanceof Error ? error.message : error);
+      return 0;
+    }
+  }
+
+  /**
    * Delete multiple keys at once
    */
   public async deleteMany(keys: string[]): Promise<number> {

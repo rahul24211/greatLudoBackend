@@ -115,6 +115,9 @@ export interface LudoGameResult {
   reason: string;
 }
 
+export type LudoPlayerType = 'HUMAN' | 'BOT';
+export type LudoBotDifficulty = 'EASY' | 'MEDIUM' | 'HARD';
+
 export interface LudoPlayer {
   playerId: string;
   userId: string;
@@ -124,6 +127,8 @@ export interface LudoPlayer {
   isConnected: boolean;
   missedTurns?: number;
   isDisqualified?: boolean;
+  playerType?: LudoPlayerType;
+  botDifficulty?: LudoBotDifficulty;
 }
 
 export interface LudoLastAction {

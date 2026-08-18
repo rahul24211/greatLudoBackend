@@ -67,6 +67,7 @@ export class LudoMatchHistoryService {
             matchId: match.id,
             userId: player.userId || player.playerId,
             color: player.color,
+            playerType: player.playerType || 'HUMAN',
             finalPosition: isWinner ? 1 : null,
           },
           { transaction }

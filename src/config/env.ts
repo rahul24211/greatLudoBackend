@@ -30,6 +30,8 @@ export const env = {
   redisGameTtlSeconds: parseInt(process.env.LUDO_GAME_TTL_SECONDS || process.env.REDIS_GAME_TTL_SECONDS || '7200', 10),
   redisFinishedGameTtlSeconds: parseInt(process.env.LUDO_FINISHED_GAME_TTL_SECONDS || process.env.REDIS_FINISHED_GAME_TTL_SECONDS || '1800', 10),
   redisPresenceTtlSeconds: parseInt(process.env.REDIS_PRESENCE_TTL_SECONDS || '300', 10),
+  ludoBotFallbackSeconds: parseInt(process.env.LUDO_BOT_FALLBACK_SECONDS || '7', 10),
+  ludoBotMoveDelayMs: parseInt(process.env.LUDO_BOT_MOVE_DELAY_MS || '900', 10),
 };
 
 export function validateEnv(): boolean {
