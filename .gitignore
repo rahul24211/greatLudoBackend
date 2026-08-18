@@ -9,3 +9,5 @@ dist
 *.sqlite3
 *.sqlite-journal
 src/scratch/
+CLASSIC_LUDO_RULES.md
+
