@@ -34,7 +34,7 @@ export function scheduleTurnTimer(
   io: SocketIOServer,
   gameId: string,
   turnNumber: number,
-  durationSeconds: number = 15
+  durationSeconds: number = 30
 ): void {
   clearGameTurnTimer(gameId);
 
