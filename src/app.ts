@@ -10,8 +10,31 @@ export const isOriginAllowed = (
   origin: string | undefined,
   callback: (err: Error | null, allow?: boolean) => void
 ): void => {
-  const allowed = [
-    env.clientUrl,
+  // Allow same-origin/non-browser requests without origin header (e.g. server-to-server or test runners)
+  if (!origin) {
+    callback(null, true);
+    return;
+  }
+
+  const configuredOrigins = (process.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+
+  const allowedOrigins = [env.clientUrl, ...configuredOrigins];
+
+  if (env.nodeEnv === 'production') {
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+    return;
+  }
+
+  // Development / Test allowances
+  const devAllowed = [
+    ...allowedOrigins,
     'http://localhost:5173',
     'http://localhost:5174',
     'http://localhost:5175',
@@ -21,8 +44,7 @@ export const isOriginAllowed = (
   ];
 
   if (
-    !origin ||
-    allowed.includes(origin) ||
+    devAllowed.includes(origin) ||
     /^http:\/\/localhost:\d+$/.test(origin) ||
     /^http:\/\/127\.0\.0\.1:\d+$/.test(origin)
   ) {

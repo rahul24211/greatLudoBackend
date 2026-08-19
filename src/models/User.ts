@@ -10,14 +10,15 @@ export interface UserAttributes {
   coins: number;
   xp: number;
   level: number;
-  status: 'ACTIVE' | 'BANNED' | 'SUSPENDED';
+  status: 'ACTIVE' | 'BANNED' | 'SUSPENDED' | 'INACTIVE';
+  role: 'SUPER_ADMIN' | 'ADMIN' | 'SUPPORT' | 'VIEWER' | 'USER';
   createdAt?: Date;
   updatedAt?: Date;
 }
 
 export type UserCreationAttributes = Optional<
   UserAttributes,
-  'id' | 'avatar' | 'coins' | 'xp' | 'level' | 'status' | 'createdAt' | 'updatedAt'
+  'id' | 'avatar' | 'coins' | 'xp' | 'level' | 'status' | 'role' | 'createdAt' | 'updatedAt'
 >;
 
 export class User extends Model<UserAttributes, UserCreationAttributes> implements UserAttributes {
@@ -29,7 +30,8 @@ export class User extends Model<UserAttributes, UserCreationAttributes> implemen
   public declare coins: number;
   public declare xp: number;
   public declare level: number;
-  public declare status: 'ACTIVE' | 'BANNED' | 'SUSPENDED';
+  public declare status: 'ACTIVE' | 'BANNED' | 'SUSPENDED' | 'INACTIVE';
+  public declare role: 'SUPER_ADMIN' | 'ADMIN' | 'SUPPORT' | 'VIEWER' | 'USER';
   public declare readonly createdAt: Date;
   public declare readonly updatedAt: Date;
 }
@@ -79,9 +81,14 @@ User.init(
       defaultValue: 1,
     },
     status: {
-      type: DataTypes.ENUM('ACTIVE', 'BANNED', 'SUSPENDED'),
+      type: DataTypes.ENUM('ACTIVE', 'BANNED', 'SUSPENDED', 'INACTIVE'),
       allowNull: false,
       defaultValue: 'ACTIVE',
+    },
+    role: {
+      type: DataTypes.ENUM('SUPER_ADMIN', 'ADMIN', 'SUPPORT', 'VIEWER', 'USER'),
+      allowNull: false,
+      defaultValue: 'USER',
     },
   },
   {

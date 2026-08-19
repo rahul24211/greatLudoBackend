@@ -1,7 +1,7 @@
 import http from 'http';
 import createApp from './app';
 import env from './config/env';
-import { connectDatabase } from './config/database';
+import { connectDatabase, closeDatabase } from './config/database';
 import { connectRedis, closeRedis } from './config/redis';
 import { closeSocketRedisAdapter } from './config/socketRedis';
 import { initializeSocket } from './socket/socketServer';
@@ -25,6 +25,7 @@ const startServer = async (): Promise<void> => {
     server.close(async () => {
       await closeSocketRedisAdapter();
       await closeRedis();
+      await closeDatabase();
       process.exit(0);
     });
   };

@@ -82,4 +82,13 @@ export const connectDatabase = async (): Promise<boolean> => {
   }
 };
 
+export const closeDatabase = async (): Promise<void> => {
+  try {
+    await sequelize.close();
+    console.log('🔌 Database connection pool closed gracefully.');
+  } catch (err) {
+    console.error('Error closing database connection:', err);
+  }
+};
+
 export default sequelize;

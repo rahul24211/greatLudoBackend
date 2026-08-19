@@ -16,10 +16,15 @@ import Notification from './Notification';
 import Session from './Session';
 import LudoMatch from './LudoMatch';
 import LudoMatchPlayer from './LudoMatchPlayer';
+import AuditLog from './AuditLog';
 
 // User & Profile (1:1)
 User.hasOne(Profile, { foreignKey: 'userId', as: 'profile', onDelete: 'CASCADE' });
 Profile.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+// User & AuditLog (1:N)
+User.hasMany(AuditLog, { foreignKey: 'adminUserId', as: 'auditLogs', onDelete: 'CASCADE' });
+AuditLog.belongsTo(User, { foreignKey: 'adminUserId', as: 'adminUser' });
 
 // User & Session (1:N)
 User.hasMany(Session, { foreignKey: 'userId', as: 'sessions', onDelete: 'CASCADE' });
@@ -84,6 +89,17 @@ LeagueMatch.belongsTo(League, { foreignKey: 'leagueId', as: 'league' });
 LudoMatch.hasMany(LudoMatchPlayer, { foreignKey: 'matchId', as: 'players', onDelete: 'CASCADE' });
 LudoMatchPlayer.belongsTo(LudoMatch, { foreignKey: 'matchId', as: 'match' });
 
+import AdminNotification from './AdminNotification';
+import AdminNotificationRead from './AdminNotificationRead';
+
+// AdminNotification & AdminNotificationRead (1:N)
+AdminNotification.hasMany(AdminNotificationRead, { foreignKey: 'notificationId', as: 'reads', onDelete: 'CASCADE' });
+AdminNotificationRead.belongsTo(AdminNotification, { foreignKey: 'notificationId', as: 'notification' });
+
+// User & AdminNotificationRead (1:N)
+User.hasMany(AdminNotificationRead, { foreignKey: 'adminUserId', as: 'notificationReads', onDelete: 'CASCADE' });
+AdminNotificationRead.belongsTo(User, { foreignKey: 'adminUserId', as: 'adminUser' });
+
 export {
   User,
   Profile,
@@ -103,4 +119,7 @@ export {
   Session,
   LudoMatch,
   LudoMatchPlayer,
+  AuditLog,
+  AdminNotification,
+  AdminNotificationRead,
 };

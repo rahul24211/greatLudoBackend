@@ -5,19 +5,20 @@ export interface TokenPayload {
   id: string;
   email: string;
   username: string;
+  role?: string;
 }
 
-export const generateAccessToken = (user: { id: string; email: string; username: string }): string => {
+export const generateAccessToken = (user: { id: string; email: string; username: string; role?: string }): string => {
   return jwt.sign(
-    { id: user.id, email: user.email, username: user.username },
+    { id: user.id, email: user.email, username: user.username, role: user.role || 'USER' },
     env.jwtSecret,
     { expiresIn: '1d' }
   );
 };
 
-export const generateRefreshToken = (user: { id: string; email: string; username: string }): string => {
+export const generateRefreshToken = (user: { id: string; email: string; username: string; role?: string }): string => {
   return jwt.sign(
-    { id: user.id, email: user.email, username: user.username },
+    { id: user.id, email: user.email, username: user.username, role: user.role || 'USER' },
     env.jwtRefreshSecret,
     { expiresIn: '7d' }
   );

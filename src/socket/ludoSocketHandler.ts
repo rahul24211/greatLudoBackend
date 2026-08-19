@@ -11,6 +11,8 @@ import LudoMatchHistoryService from '../services/ludo/LudoMatchHistoryService';
 import { LudoTurnService } from '../game-engine/ludo/LudoTurnService';
 import { LudoBotService } from '../game-engine/ludo/bot/LudoBotService';
 import { LudoMatchmakingService } from '../modules/ludo/matchmaking/LudoMatchmakingService';
+import { verifyAccessToken } from '../utils/tokenUtils';
+import { isAdminRole, hasPermission } from '../modules/admin/AdminPermissions';
 import env from '../config/env';
 
 // In-memory fallback map for environments without Redis
@@ -222,6 +224,84 @@ async function saveAuthoritativeState(gameState: LudoGameState): Promise<boolean
     return await ludoGameStateRepository.saveGameState(gameState);
   } catch {
     return true;
+  }
+}
+
+/**
+ * Authenticate socket connection or event payload for Admin privileges.
+ */
+export function authenticateAdminSocket(token: string | undefined): {
+  authenticated: boolean;
+  role?: string;
+  user?: any;
+  error?: string;
+} {
+  if (!token) {
+    return { authenticated: false, error: 'Authentication token required' };
+  }
+  try {
+    const payload = verifyAccessToken(token);
+    if (
+      !payload ||
+      !payload.role ||
+      !isAdminRole(payload.role) ||
+      !hasPermission(payload.role, 'GAME_VIEW')
+    ) {
+      return { authenticated: false, error: 'Unauthorized: GAME_VIEW permission required' };
+    }
+    return { authenticated: true, role: payload.role, user: payload };
+  } catch {
+    return { authenticated: false, error: 'Invalid or expired authentication token' };
+  }
+}
+
+/**
+ * Broadcast sanitized, safe game telemetry to subscribed Admin monitors.
+ */
+export function broadcastToAdminMonitors(
+  io: SocketIOServer,
+  gameId: string,
+  eventType: string,
+  gameState: LudoGameState
+): void {
+  if (!gameState || !io) return;
+
+  const hasBot = gameState.players.some((p) => p.playerType === 'BOT');
+  const safePayload = {
+    eventType,
+    gameId: gameState.gameId,
+    gameMode: gameState.mode,
+    status: gameState.status,
+    gameType: hasBot ? 'HUMAN_VS_BOT' : 'HUMAN_VS_HUMAN',
+    turnNumber: gameState.turnNumber,
+    currentPlayerId: gameState.currentPlayerId,
+    diceRolled: Boolean(gameState.diceRolled),
+    diceValue: gameState.diceValue || null,
+    turnStartedAt: gameState.turnStartedAt || null,
+    finishedAt: gameState.finishedAt || null,
+    winnerId: gameState.winner || null,
+    players: gameState.players.map((p) => ({
+      playerId: p.playerId,
+      userId: p.userId,
+      username: p.username,
+      color: p.color,
+      playerType: p.playerType,
+      isConnected: p.isConnected !== false,
+      isWinner: gameState.winner === p.playerId,
+      tokens: (p.tokens || []).map((t) => ({
+        tokenId: t.tokenId,
+        state: t.state,
+        position: t.position,
+      })),
+    })),
+  };
+
+  io.to('admin:games:live').emit('admin:game_update', safePayload);
+  io.to(`admin:game:${gameId}`).emit('admin:game_update', safePayload);
+
+  if (gameState.status === 'FINISHED') {
+    io.to('admin:games:live').emit('admin:game_finished', safePayload);
+    io.to(`admin:game:${gameId}`).emit('admin:game_finished', safePayload);
   }
 }
 
@@ -1023,7 +1103,80 @@ export function registerLudoSocketHandlers(io: SocketIOServer, socket: Socket): 
     }
   });
 
-  // 8. Disconnect Handler
+  // 8. Admin Live Feed Subscriptions (Authorized & Protected)
+  socket.on('admin:join_live_feed', (data: { token?: string }, callback?: Function) => {
+    const auth = authenticateAdminSocket(data?.token);
+    if (!auth.authenticated) {
+      if (typeof callback === 'function') callback({ success: false, error: auth.error });
+      return socket.emit('admin:error', { error: auth.error });
+    }
+    socket.join('admin:games:live');
+    if (typeof callback === 'function') {
+      callback({ success: true, message: 'Joined admin live feed', role: auth.role });
+    }
+  });
+
+  socket.on(
+    'admin:join_game_feed',
+    (data: { token?: string; gameId: string }, callback?: Function) => {
+      const auth = authenticateAdminSocket(data?.token);
+      if (!auth.authenticated) {
+        if (typeof callback === 'function') callback({ success: false, error: auth.error });
+        return socket.emit('admin:error', { error: auth.error });
+      }
+      if (!data?.gameId) {
+        if (typeof callback === 'function') callback({ success: false, error: 'gameId is required' });
+        return;
+      }
+      socket.join(`admin:game:${data.gameId}`);
+      if (typeof callback === 'function') {
+        callback({ success: true, message: `Joined admin game feed ${data.gameId}` });
+      }
+    }
+  );
+
+  socket.on('admin:leave_game_feed', (data: { gameId: string }, callback?: Function) => {
+    if (data?.gameId) {
+      socket.leave(`admin:game:${data.gameId}`);
+    }
+    if (typeof callback === 'function') callback({ success: true });
+  });
+
+  socket.on('admin:join_matchmaking_feed', (data: { token?: string }, callback?: Function) => {
+    const auth = authenticateAdminSocket(data?.token);
+    if (!auth.authenticated || !hasPermission(auth.role, 'MATCHMAKING_VIEW')) {
+      if (typeof callback === 'function') callback({ success: false, error: auth.error || 'Forbidden' });
+      return socket.emit('admin:error', { error: auth.error || 'Forbidden' });
+    }
+    socket.join('admin:matchmaking');
+    if (typeof callback === 'function') {
+      callback({ success: true, message: 'Joined admin matchmaking live feed', role: auth.role });
+    }
+  });
+
+  socket.on('admin:leave_matchmaking_feed', (_data: any, callback?: Function) => {
+    socket.leave('admin:matchmaking');
+    if (typeof callback === 'function') callback({ success: true });
+  });
+
+  socket.on('admin:join_notifications', (data: { token?: string }, callback?: Function) => {
+    const auth = authenticateAdminSocket(data?.token);
+    if (!auth.authenticated || !hasPermission(auth.role, 'NOTIFICATION_VIEW')) {
+      if (typeof callback === 'function') callback({ success: false, error: auth.error || 'Forbidden' });
+      return socket.emit('admin:error', { error: auth.error || 'Forbidden' });
+    }
+    socket.join('admin:notifications');
+    if (typeof callback === 'function') {
+      callback({ success: true, message: 'Joined admin notifications live feed', role: auth.role });
+    }
+  });
+
+  socket.on('admin:leave_notifications', (_data: any, callback?: Function) => {
+    socket.leave('admin:notifications');
+    if (typeof callback === 'function') callback({ success: true });
+  });
+
+  // 9. Disconnect Handler
   socket.on('disconnect', async () => {
     const userId = getAuthenticatedUserId(socket);
     if (!userId) return;

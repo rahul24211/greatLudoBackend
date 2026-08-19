@@ -17,20 +17,25 @@ export const runSeeders = async (): Promise<void> => {
     const passwordHash = await bcrypt.hash('password123', 10);
 
     // Seed Sample Users
-    const user1 = await User.findOrCreate({
+    const [user1] = await User.findOrCreate({
       where: { email: 'admin@ludoarena.com' },
       defaults: {
         username: 'LudoHost',
         email: 'admin@ludoarena.com',
         passwordHash,
+        role: 'SUPER_ADMIN',
         coins: 50000,
         xp: 1200,
         level: 15,
         status: 'ACTIVE',
       },
     });
+    // Ensure role is SUPER_ADMIN if already existing
+    if (user1.role !== 'SUPER_ADMIN') {
+      await user1.update({ role: 'SUPER_ADMIN' });
+    }
 
-    const user2 = await User.findOrCreate({
+    const [user2] = await User.findOrCreate({
       where: { email: 'player1@ludoarena.com' },
       defaults: {
         username: 'CyberRoller',
@@ -44,11 +49,11 @@ export const runSeeders = async (): Promise<void> => {
     });
 
     // Seed User Profiles
-    if (user1[0]) {
+    if (user1) {
       await Profile.findOrCreate({
-        where: { userId: user1[0].id },
+        where: { userId: user1.id },
         defaults: {
-          userId: user1[0].id,
+          userId: user1.id,
           bio: 'Official Ludo Arena Tournament Champion 🏆',
           rankTitle: 'Grandmaster',
           totalMatches: 120,
@@ -61,11 +66,11 @@ export const runSeeders = async (): Promise<void> => {
       });
     }
 
-    if (user2[0]) {
+    if (user2) {
       await Profile.findOrCreate({
-        where: { userId: user2[0].id },
+        where: { userId: user2.id },
         defaults: {
-          userId: user2[0].id,
+          userId: user2.id,
           bio: 'Ludo enthusiast & blitz specialist ⚡',
           rankTitle: 'Gold Roller',
           totalMatches: 45,
@@ -79,12 +84,12 @@ export const runSeeders = async (): Promise<void> => {
     }
 
     // Seed Sample Room
-    if (user1[0]) {
+    if (user1) {
       await Room.findOrCreate({
         where: { code: '849201' },
         defaults: {
           code: '849201',
-          hostId: user1[0].id,
+          hostId: user1.id,
           gameMode: 'CLASSIC',
           maxPlayers: 4,
           status: 'WAITING',
@@ -120,11 +125,11 @@ export const runSeeders = async (): Promise<void> => {
     });
 
     // Seed Sample Leaderboard
-    if (user1[0]) {
+    if (user1) {
       await Leaderboard.findOrCreate({
-        where: { userId: user1[0].id, period: 'GLOBAL' },
+        where: { userId: user1.id, period: 'GLOBAL' },
         defaults: {
-          userId: user1[0].id,
+          userId: user1.id,
           period: 'GLOBAL',
           rank: 1,
           score: 3450,
