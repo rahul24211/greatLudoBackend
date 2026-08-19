@@ -1,4 +1,5 @@
 import { Server as SocketIOServer } from 'socket.io';
+import { getIO } from '../../socket/socketServer';
 import { redisLockService } from '../../services/redis/redisLock';
 import { LudoGameEngine } from '../../game-engine/ludo/LudoGameEngine';
 import ludoGameStateRepository from '../../repositories/redis/LudoGameStateRepository';
@@ -117,7 +118,8 @@ export class AdminGameModerationService {
       }
 
       // 9. Realtime Socket.IO Broadcast to game participants and admin feeds
-      if (io) {
+      const effectiveIo = io || getIO();
+      if (effectiveIo) {
         const gameRoom = `ludo:game:${gameId}`;
         const endPayload = {
           gameId,
@@ -128,15 +130,15 @@ export class AdminGameModerationService {
           gameState,
         };
 
-        io.to(gameRoom).emit('ludo:game_ended', endPayload);
-        io.to(gameRoom).emit('ludo:state_updated', { gameId, gameState });
-        io.to('admin:games:live').emit('admin:game_update', {
+        effectiveIo.to(gameRoom).emit('ludo:game_ended', endPayload);
+        effectiveIo.to(gameRoom).emit('ludo:state_updated', { gameId, gameState });
+        effectiveIo.to('admin:games:live').emit('admin:game_update', {
           gameId,
           status: 'FINISHED',
           finishReason: 'ADMIN_FORCED',
           gameState,
         });
-        io.to(`admin:game:${gameId}`).emit('admin:game_update', {
+        effectiveIo.to(`admin:game:${gameId}`).emit('admin:game_update', {
           gameId,
           status: 'FINISHED',
           finishReason: 'ADMIN_FORCED',

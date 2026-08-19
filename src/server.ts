@@ -10,7 +10,8 @@ const startServer = async (): Promise<void> => {
   const app = createApp();
   const server = http.createServer(app);
 
-  initializeSocket(server);
+  const io = initializeSocket(server);
+  app.set('io', io);
 
   await connectDatabase();
   await connectRedis();

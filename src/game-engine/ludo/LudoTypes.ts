@@ -129,6 +129,8 @@ export interface LudoPlayer {
   isDisqualified?: boolean;
   playerType?: LudoPlayerType;
   botDifficulty?: LudoBotDifficulty;
+  isHost?: boolean;
+  isReady?: boolean;
 }
 
 export interface LudoLastAction {
@@ -141,8 +143,13 @@ export interface LudoLastAction {
 export interface LudoGameState {
   gameId: string;
   roomId: string;
+  roomCode?: string;
   mode: LudoGameMode;
   status: LudoGameStatus;
+  maxPlayers?: number;
+  entryFee?: number;
+  prizePool?: number;
+  isPrivate?: boolean;
   players: LudoPlayer[];
   currentPlayerId: string | null;
   diceValue: number | null;

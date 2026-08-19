@@ -5,6 +5,10 @@ import { setupSocketRedisAdapter } from '../config/socketRedis';
 import { verifyAccessToken } from '../utils/tokenUtils';
 import { registerLudoSocketHandlers } from './ludoSocketHandler';
 
+let ioInstance: SocketIOServer | null = null;
+
+export const getIO = (): SocketIOServer | null => ioInstance;
+
 export const initializeSocket = (httpServer: HttpServer): SocketIOServer => {
   const io = new SocketIOServer(httpServer, {
     cors: {
@@ -13,6 +17,8 @@ export const initializeSocket = (httpServer: HttpServer): SocketIOServer => {
       credentials: true,
     },
   });
+
+  ioInstance = io;
 
   // Attach Redis adapter for scaling across instances
   setupSocketRedisAdapter(io);

@@ -13,6 +13,7 @@ import { LudoBotService } from '../game-engine/ludo/bot/LudoBotService';
 import { LudoMatchmakingService } from '../modules/ludo/matchmaking/LudoMatchmakingService';
 import { verifyAccessToken } from '../utils/tokenUtils';
 import { isAdminRole, hasPermission } from '../modules/admin/AdminPermissions';
+import { User } from '../models';
 import env from '../config/env';
 
 // In-memory fallback map for environments without Redis
@@ -566,155 +567,267 @@ export function registerLudoSocketHandlers(io: SocketIOServer, socket: Socket): 
     }
   });
 
-  // 1. Create Game
-  socket.on('ludo:create_game', async (data?: { mode?: string }, callback?: Function) => {
-    try {
-      const userId = getAuthenticatedUserId(socket);
-      if (!userId) {
-        return sendLudoError(socket, 'UNAUTHORIZED', 'Authentication required to create a game');
+  // 1. Create Game / Private Room
+  socket.on(
+    'ludo:create_game',
+    async (
+      data?: {
+        mode?: string;
+        gameId?: string;
+        roomCode?: string;
+        maxPlayers?: number;
+        entryFee?: number;
+        isPrivate?: boolean;
+      },
+      callback?: Function
+    ) => {
+      try {
+        const userId = getAuthenticatedUserId(socket);
+        if (!userId) {
+          return sendLudoError(socket, 'UNAUTHORIZED', 'Authentication required to create a game');
+        }
+
+        const gameId =
+          data?.gameId ||
+          (data?.roomCode
+            ? `game_room_${data.roomCode}`
+            : `game_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`);
+
+        const userRecord = await User.findByPk(userId).catch(() => null);
+        const username = socket.data.user?.username || userRecord?.username || 'Host Player';
+
+        const gameState = LudoGameEngine.createGame({
+          gameId,
+          roomId: data?.roomCode || gameId,
+          mode: data?.mode || 'CLASSIC',
+          playerIds: [userId],
+        });
+
+        gameState.roomCode = data?.roomCode;
+        gameState.maxPlayers = data?.maxPlayers || 4;
+        gameState.entryFee = data?.entryFee || 100;
+        gameState.prizePool = (data?.entryFee || 100) * (data?.maxPlayers || 4) * 0.9;
+        gameState.isPrivate = data?.isPrivate !== false;
+
+        const creator = gameState.players[0];
+        creator.username = username;
+        creator.isHost = true;
+        creator.isReady = true;
+
+        await saveAuthoritativeState(gameState);
+
+        const room = `ludo:game:${gameId}`;
+        socket.join(room);
+
+        socket.emit('ludo:game_created', {
+          gameId,
+          gameState,
+          player: creator,
+        });
+
+        socket.emit('ludo:state_updated', { gameId, gameState });
+
+        if (typeof callback === 'function') {
+          callback({ success: true, gameId, gameState });
+        }
+      } catch (err: any) {
+        sendLudoError(socket, 'INVALID_REQUEST', err.message || 'Failed to create game');
       }
-
-      const gameId = `game_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-      const gameState = LudoGameEngine.createGame({
-        gameId,
-        mode: data?.mode || 'CLASSIC',
-        playerIds: [userId],
-      });
-
-      await saveAuthoritativeState(gameState);
-
-      const room = `ludo:game:${gameId}`;
-      socket.join(room);
-
-      const creator = gameState.players[0];
-      socket.emit('ludo:game_created', {
-        gameId,
-        gameState,
-        player: creator,
-      });
-
-      socket.emit('ludo:state_updated', { gameId, gameState });
-
-      if (typeof callback === 'function') {
-        callback({ success: true, gameId, gameState });
-      }
-    } catch (err: any) {
-      sendLudoError(socket, 'INVALID_REQUEST', err.message || 'Failed to create game');
     }
-  });
+  );
 
-  // 2. Join Game
-  socket.on('ludo:join_game', async (data: { gameId: string }, callback?: Function) => {
-    try {
-      const userId = getAuthenticatedUserId(socket);
-      if (!userId) {
-        return sendLudoError(socket, 'UNAUTHORIZED', 'Authentication required to join a game');
-      }
-
-      if (!data || !data.gameId) {
-        return sendLudoError(socket, 'INVALID_REQUEST', 'gameId is required');
-      }
-
-      const gameState = await loadAuthoritativeState(data.gameId);
-      if (!gameState) {
-        return sendLudoError(socket, 'GAME_NOT_FOUND', `Game ${data.gameId} not found`);
-      }
-
-      if (gameState.status === 'FINISHED') {
-        return sendLudoError(socket, 'GAME_FINISHED', 'Cannot join an already finished game');
-      }
-
-      let player = gameState.players.find((p) => p.playerId === userId || p.userId === userId);
-
-      if (!player) {
-        if (gameState.status !== 'WAITING') {
-          return sendLudoError(socket, 'GAME_NOT_ACTIVE', 'Cannot join game in progress. Game already started.');
+  // 2. Join Game / Private Room
+  socket.on(
+    'ludo:join_game',
+    async (data: { gameId?: string; roomCode?: string }, callback?: Function) => {
+      try {
+        const userId = getAuthenticatedUserId(socket);
+        if (!userId) {
+          return sendLudoError(socket, 'UNAUTHORIZED', 'Authentication required to join a game');
         }
 
-        if (gameState.players.length >= 4) {
-          return sendLudoError(socket, 'ROOM_FULL', 'Game is full (maximum 4 players)');
+        const targetGameId =
+          data?.gameId || (data?.roomCode ? `game_room_${data.roomCode}` : '');
+        if (!targetGameId) {
+          return sendLudoError(socket, 'INVALID_REQUEST', 'gameId or roomCode is required');
         }
 
-        const nextColor: LudoColor = LUDO_COLORS[gameState.players.length % 4];
-        player = {
+        const gameState = await loadAuthoritativeState(targetGameId);
+        if (!gameState) {
+          return sendLudoError(
+            socket,
+            'GAME_NOT_FOUND',
+            `Room #${data.roomCode || data.gameId} not found`
+          );
+        }
+
+        if (gameState.status === 'FINISHED') {
+          return sendLudoError(socket, 'GAME_FINISHED', 'Cannot join an already finished game');
+        }
+
+        const userRecord = await User.findByPk(userId).catch(() => null);
+        const username = socket.data.user?.username || userRecord?.username || 'Player';
+
+        let player = gameState.players.find((p) => p.playerId === userId || p.userId === userId);
+
+        if (!player) {
+          if (gameState.status !== 'WAITING') {
+            return sendLudoError(
+              socket,
+              'GAME_NOT_ACTIVE',
+              'Cannot join game in progress. Game already started.'
+            );
+          }
+
+          const maxCapacity = gameState.maxPlayers || 4;
+          if (gameState.players.length >= maxCapacity) {
+            return sendLudoError(socket, 'ROOM_FULL', `Room is full (maximum ${maxCapacity} players)`);
+          }
+
+          const nextColor: LudoColor = LUDO_COLORS[gameState.players.length % 4];
+          player = {
+            playerId: userId,
+            userId,
+            username,
+            color: nextColor,
+            tokens: LudoTokenService.createPlayerTokens(userId, nextColor),
+            isConnected: true,
+            isHost: false,
+            isReady: false,
+          };
+
+          gameState.players.push(player);
+        } else {
+          player.isConnected = true;
+          if (username) player.username = username;
+        }
+
+        await saveAuthoritativeState(gameState);
+
+        const room = `ludo:game:${targetGameId}`;
+        socket.join(room);
+
+        io.to(room).emit('ludo:player_joined', {
+          gameId: targetGameId,
           playerId: userId,
-          userId,
-          color: nextColor,
-          tokens: LudoTokenService.createPlayerTokens(userId, nextColor),
-          isConnected: true,
-        };
+          playerColor: player.color,
+          gameState,
+        });
 
-        gameState.players.push(player);
-      } else {
-        player.isConnected = true;
+        io.to(room).emit('ludo:state_updated', { gameId: targetGameId, gameState });
+
+        if (typeof callback === 'function') {
+          callback({ success: true, gameId: targetGameId, gameState });
+        }
+      } catch (err: any) {
+        sendLudoError(socket, 'INVALID_REQUEST', err.message || 'Failed to join game');
       }
-
-      await saveAuthoritativeState(gameState);
-
-      const room = `ludo:game:${data.gameId}`;
-      socket.join(room);
-
-      io.to(room).emit('ludo:player_joined', {
-        gameId: data.gameId,
-        playerId: userId,
-        playerColor: player.color,
-        gameState,
-      });
-
-      io.to(room).emit('ludo:state_updated', { gameId: data.gameId, gameState });
-
-      if (typeof callback === 'function') {
-        callback({ success: true, gameId: data.gameId, gameState });
-      }
-    } catch (err: any) {
-      sendLudoError(socket, 'INVALID_REQUEST', err.message || 'Failed to join game');
     }
-  });
+  );
+
+  // 2.5 Toggle Player Ready Status
+  socket.on(
+    'ludo:toggle_ready',
+    async (
+      data: { gameId?: string; roomCode?: string; isReady?: boolean },
+      callback?: Function
+    ) => {
+      try {
+        const userId = getAuthenticatedUserId(socket);
+        if (!userId) return;
+
+        const targetGameId =
+          data?.gameId || (data?.roomCode ? `game_room_${data.roomCode}` : '');
+        if (!targetGameId) return;
+
+        const gameState = await loadAuthoritativeState(targetGameId);
+        if (!gameState || gameState.status !== 'WAITING') return;
+
+        const player = gameState.players.find(
+          (p) => p.playerId === userId || p.userId === userId
+        );
+        if (player) {
+          player.isReady = data.isReady !== undefined ? data.isReady : !player.isReady;
+          await saveAuthoritativeState(gameState);
+
+          const room = `ludo:game:${targetGameId}`;
+          io.to(room).emit('ludo:state_updated', { gameId: targetGameId, gameState });
+
+          if (typeof callback === 'function') {
+            callback({ success: true, isReady: player.isReady, gameState });
+          }
+        }
+      } catch (err) {
+        console.error('Error toggling ready status:', err);
+      }
+    }
+  );
 
   // 3. Start Game
-  socket.on('ludo:start_game', async (data: { gameId: string }, callback?: Function) => {
-    try {
-      const userId = getAuthenticatedUserId(socket);
-      if (!userId) {
-        return sendLudoError(socket, 'UNAUTHORIZED', 'Authentication required to start game');
+  socket.on(
+    'ludo:start_game',
+    async (data: { gameId?: string; roomCode?: string }, callback?: Function) => {
+      try {
+        const userId = getAuthenticatedUserId(socket);
+        if (!userId) {
+          return sendLudoError(socket, 'UNAUTHORIZED', 'Authentication required to start game');
+        }
+
+        const targetGameId =
+          data?.gameId || (data?.roomCode ? `game_room_${data.roomCode}` : '');
+        if (!targetGameId) {
+          return sendLudoError(socket, 'INVALID_REQUEST', 'gameId is required');
+        }
+
+        const gameState = await loadAuthoritativeState(targetGameId);
+        if (!gameState) {
+          return sendLudoError(socket, 'GAME_NOT_FOUND', `Game ${targetGameId} not found`);
+        }
+
+        if (gameState.players.length < 2) {
+          return sendLudoError(
+            socket,
+            'INVALID_REQUEST',
+            'At least 2 players are required to start the game'
+          );
+        }
+
+        const updatedState = LudoGameEngine.startGame(gameState);
+        updatedState.gameId = targetGameId;
+        updatedState.roomCode = gameState.roomCode;
+        updatedState.maxPlayers = gameState.maxPlayers;
+        updatedState.entryFee = gameState.entryFee;
+        updatedState.prizePool = gameState.prizePool;
+        updatedState.isPrivate = gameState.isPrivate;
+
+        await saveAuthoritativeState(updatedState);
+
+        const room = `ludo:game:${targetGameId}`;
+        io.to(room).emit('ludo:game_started', {
+          gameId: targetGameId,
+          gameState: updatedState,
+          currentPlayerId: updatedState.currentPlayerId,
+          turnStartedAt: updatedState.turnStartedAt,
+        });
+
+        io.to(room).emit('ludo:state_updated', { gameId: targetGameId, gameState: updatedState });
+
+        // Start 30s turn timeout timer
+        scheduleTurnTimer(
+          io,
+          targetGameId,
+          updatedState.turnNumber || 1,
+          updatedState.turnTimeLimit || 30
+        );
+
+        if (typeof callback === 'function') {
+          callback({ success: true, gameId: targetGameId, gameState: updatedState });
+        }
+      } catch (err: any) {
+        sendLudoError(socket, 'INVALID_REQUEST', err.message || 'Failed to start game');
       }
-
-      if (!data || !data.gameId) {
-        return sendLudoError(socket, 'INVALID_REQUEST', 'gameId is required');
-      }
-
-      const gameState = await loadAuthoritativeState(data.gameId);
-      if (!gameState) {
-        return sendLudoError(socket, 'GAME_NOT_FOUND', `Game ${data.gameId} not found`);
-      }
-
-      if (gameState.players.length < 2) {
-        return sendLudoError(socket, 'INVALID_REQUEST', 'At least 2 players are required to start the game');
-      }
-
-      const updatedState = LudoGameEngine.startGame(gameState);
-      await saveAuthoritativeState(updatedState);
-
-      const room = `ludo:game:${data.gameId}`;
-      io.to(room).emit('ludo:game_started', {
-        gameId: data.gameId,
-        gameState: updatedState,
-        currentPlayerId: updatedState.currentPlayerId,
-        turnStartedAt: updatedState.turnStartedAt,
-      });
-
-      io.to(room).emit('ludo:state_updated', { gameId: data.gameId, gameState: updatedState });
-
-      // Start 15s turn timeout timer
-      scheduleTurnTimer(io, data.gameId, updatedState.turnNumber || 1, updatedState.turnTimeLimit || 15);
-
-      if (typeof callback === 'function') {
-        callback({ success: true, gameId: data.gameId, gameState: updatedState });
-      }
-    } catch (err: any) {
-      sendLudoError(socket, 'INVALID_REQUEST', err.message || 'Failed to start game');
     }
-  });
+  );
 
   // 4. Roll Dice
   socket.on('ludo:roll_dice', async (data: { gameId: string }, callback?: Function) => {
@@ -932,7 +1045,9 @@ export function registerLudoSocketHandlers(io: SocketIOServer, socket: Socket): 
             io.to(room).emit('ludo:game_finished', {
               gameId: data.gameId,
               winnerId: moveRes.winnerId,
+              winnerName: winnerObj?.username || (winnerObj?.playerType === 'BOT' ? 'Smart Bot' : 'Player'),
               winnerColor: winnerObj?.color || null,
+              gameState: moveRes.gameState,
               finishedAt: moveRes.gameState!.finishedAt || Date.now(),
             });
           } else {
