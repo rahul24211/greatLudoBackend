@@ -63,3 +63,23 @@ export const authenticateToken = async (
   }
 };
 
+export const optionalAuthenticateToken = async (
+  req: AuthenticatedRequest,
+  _res: Response,
+  next: NextFunction
+): Promise<void> => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.substring(7) : null;
+
+  if (token) {
+    try {
+      const decoded = verifyAccessToken(token);
+      req.user = decoded;
+    } catch {
+      // Ignore token decode failures for optional auth
+    }
+  }
+
+  next();
+};
+

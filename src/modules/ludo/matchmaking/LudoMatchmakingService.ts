@@ -14,6 +14,8 @@ export interface QueuedPlayer {
   socketId: string;
   username: string;
   queuedAt: number;
+  maxPlayers: number; // 2 or 4
+  stake?: number;
 }
 
 export interface MatchmakingResult {
@@ -29,17 +31,25 @@ export interface MatchmakingResult {
   reason?: string;
 }
 
+const ALL_LUDO_COLORS: LudoColor[] = ['RED', 'GREEN', 'YELLOW', 'BLUE'];
+
 export class LudoMatchmakingService {
-  private static QUEUE_KEY = 'ludo:queue:classic';
+  private static QUEUE_KEY_2P = 'ludo:queue:classic:2p';
+  private static QUEUE_KEY_4P = 'ludo:queue:classic:4p';
   private static LOCK_KEY = lockKey('matchmaking', 'classic');
   private static fallbackTimers = new Map<string, NodeJS.Timeout>();
 
+  private static getQueueKey(maxPlayers: number): string {
+    return maxPlayers === 4 ? this.QUEUE_KEY_4P : this.QUEUE_KEY_2P;
+  }
+
   /**
-   * Get all currently queued players from Redis queue.
+   * Get all currently queued players from Redis queue for a specific player mode.
    */
-  public static async getQueue(): Promise<QueuedPlayer[]> {
+  public static async getQueue(maxPlayers: number = 2): Promise<QueuedPlayer[]> {
     try {
-      const items = await redisService.lrange(this.QUEUE_KEY, 0, -1);
+      const qKey = this.getQueueKey(maxPlayers);
+      const items = await redisService.lrange(qKey, 0, -1);
       return items
         .map((item) => {
           try {
@@ -55,24 +65,29 @@ export class LudoMatchmakingService {
   }
 
   /**
-   * Check if a specific userId is currently queued.
+   * Check if a specific userId is currently queued across any queue.
    */
   public static async isPlayerInQueue(userId: string): Promise<boolean> {
-    const queue = await this.getQueue();
-    return queue.some((p) => p.userId === userId);
+    const q2 = await this.getQueue(2);
+    const q4 = await this.getQueue(4);
+    return q2.some((p) => p.userId === userId) || q4.some((p) => p.userId === userId);
   }
 
   /**
-   * Add a player to the Classic Ludo matchmaking queue or immediately match if compatible player waits.
+   * Add a player to the Classic Ludo matchmaking queue or immediately match if compatible players wait.
    */
   public static async findMatch(
-    player: { userId: string; socketId: string; username: string },
+    player: { userId: string; socketId: string; username: string; maxPlayers?: number; stake?: number },
     io: SocketIOServer,
-    onBotTurnTrigger?: (gameId: string) => void
+    onBotTurnTrigger?: (gameId: string) => void,
+    onTurnTimerTrigger?: (gameId: string, turnNumber: number, timeLimit: number) => void
   ): Promise<MatchmakingResult> {
     if (!player || !player.userId) {
       return { matched: false, reason: 'Invalid player information' };
     }
+
+    const maxPlayers = player.maxPlayers === 4 ? 4 : 2;
+    const qKey = this.getQueueKey(maxPlayers);
 
     // Distributed lock to prevent double matching race conditions
     let lockRes = null;
@@ -81,71 +96,66 @@ export class LudoMatchmakingService {
     } catch {}
 
     try {
-      // 1. Check if user is already in queue
-      const currentQueue = await this.getQueue();
+      // 1. Check if user is already in this queue
+      const currentQueue = await this.getQueue(maxPlayers);
       const existingIdx = currentQueue.findIndex((p) => p.userId === player.userId);
 
       if (existingIdx !== -1) {
-        // Update socketId in queue in case of refresh
         currentQueue[existingIdx].socketId = player.socketId;
-        await redisService.del(this.QUEUE_KEY);
+        await redisService.del(qKey);
         for (const qp of currentQueue) {
-          await redisService.rpush(this.QUEUE_KEY, JSON.stringify(qp));
+          await redisService.rpush(qKey, JSON.stringify(qp));
         }
         return { matched: false, reason: 'Already in matchmaking queue' };
       }
 
-      // 2. Look for another waiting HUMAN player in the queue (excluding self)
-      const waitingPlayer = currentQueue.find((p) => p.userId !== player.userId);
+      // 2. Filter other waiting HUMAN players (excluding self)
+      const otherWaitingPlayers = currentQueue.filter((p) => p.userId !== player.userId);
 
-      if (waitingPlayer) {
-        // ----------------------------------------------------
-        // MATCH FOUND: HUMAN VS HUMAN
-        // ----------------------------------------------------
-        // Remove matched waiting player from Redis queue
-        const remaining = currentQueue.filter((p) => p.userId !== waitingPlayer.userId && p.userId !== player.userId);
-        await redisService.del(this.QUEUE_KEY);
+      // Check if we have enough players to immediately launch a full match
+      const neededPlayers = maxPlayers - 1; // 1 more for 2P, 3 more for 4P
+
+      if (otherWaitingPlayers.length >= neededPlayers) {
+        // MATCH FOUND: FULL HUMAN LOBBY
+        const matchedHumans = otherWaitingPlayers.slice(0, neededPlayers);
+        const allParticipants = [
+          { userId: player.userId, socketId: player.socketId, username: player.username || player.userId },
+          ...matchedHumans,
+        ];
+
+        // Remove matched players from Redis queue
+        const matchedUserIds = new Set(allParticipants.map((p) => p.userId));
+        const remaining = currentQueue.filter((p) => !matchedUserIds.has(p.userId));
+        await redisService.del(qKey);
         for (const qp of remaining) {
-          await redisService.rpush(this.QUEUE_KEY, JSON.stringify(qp));
+          await redisService.rpush(qKey, JSON.stringify(qp));
         }
 
-        // Cancel waiting player's bot fallback timer
-        this.clearFallbackTimer(waitingPlayer.userId);
-        this.clearFallbackTimer(player.userId);
+        // Clear fallback timers
+        for (const p of allParticipants) {
+          this.clearFallbackTimer(p.userId);
+        }
 
         // Create new authoritative Classic Ludo game
         const initialGame = LudoGameEngine.createGame({ mode: 'CLASSIC' });
-
-        const p1Tokens = LudoTokenService.createPlayerTokens(player.userId, 'RED');
-        const p2Tokens = LudoTokenService.createPlayerTokens(waitingPlayer.userId, 'GREEN');
-
-        const player1: LudoPlayer = {
-          playerId: player.userId,
-          userId: player.userId,
-          username: player.username || player.userId,
-          color: 'RED',
-          tokens: p1Tokens,
-          isConnected: true,
-          playerType: 'HUMAN',
-          missedTurns: 0,
-          isDisqualified: false,
-        };
-
-        const player2: LudoPlayer = {
-          playerId: waitingPlayer.userId,
-          userId: waitingPlayer.userId,
-          username: waitingPlayer.username || waitingPlayer.userId,
-          color: 'GREEN',
-          tokens: p2Tokens,
-          isConnected: true,
-          playerType: 'HUMAN',
-          missedTurns: 0,
-          isDisqualified: false,
-        };
+        const assignedPlayers: LudoPlayer[] = allParticipants.map((p, idx) => {
+          const color = ALL_LUDO_COLORS[idx];
+          return {
+            playerId: p.userId,
+            userId: p.userId,
+            username: p.username || p.userId,
+            color,
+            tokens: LudoTokenService.createPlayerTokens(p.userId, color),
+            isConnected: true,
+            playerType: 'HUMAN',
+            missedTurns: 0,
+            isDisqualified: false,
+          };
+        });
 
         let gameState: LudoGameState = {
           ...initialGame,
-          players: [player1, player2],
+          players: assignedPlayers,
           currentPlayerId: player.userId,
         };
 
@@ -154,37 +164,30 @@ export class LudoMatchmakingService {
 
         const room = `ludo:game:${gameState.gameId}`;
 
-        // Join sockets to room
-        const socket1 = io.sockets.sockets.get(player.socketId);
-        const socket2 = io.sockets.sockets.get(waitingPlayer.socketId);
+        // Join sockets to room and emit match_found
+        for (let i = 0; i < allParticipants.length; i++) {
+          const p = allParticipants[i];
+          const sock = io.sockets.sockets.get(p.socketId);
+          if (sock) sock.join(room);
 
-        if (socket1) socket1.join(room);
-        if (socket2) socket2.join(room);
+          const opponents = assignedPlayers.filter((ap) => ap.userId !== p.userId);
+          const primaryOpponent = opponents[0];
 
-        // Broadcast match_found to both players
-        io.to(player.socketId).emit('ludo:match_found', {
-          gameId: gameState.gameId,
-          gameMode: 'CLASSIC',
-          gameState,
-          opponent: {
-            userId: waitingPlayer.userId,
-            username: waitingPlayer.username,
-            isBot: false,
-            color: 'GREEN',
-          },
-        });
-
-        io.to(waitingPlayer.socketId).emit('ludo:match_found', {
-          gameId: gameState.gameId,
-          gameMode: 'CLASSIC',
-          gameState,
-          opponent: {
-            userId: player.userId,
-            username: player.username,
-            isBot: false,
-            color: 'RED',
-          },
-        });
+          io.to(p.socketId).emit('ludo:match_found', {
+            gameId: gameState.gameId,
+            gameMode: 'CLASSIC',
+            gameState,
+            maxPlayers,
+            opponent: primaryOpponent
+              ? {
+                  userId: primaryOpponent.userId,
+                  username: primaryOpponent.username,
+                  isBot: false,
+                  color: primaryOpponent.color,
+                }
+              : undefined,
+          });
+        }
 
         io.to(room).emit('ludo:game_started', {
           gameId: gameState.gameId,
@@ -193,42 +196,52 @@ export class LudoMatchmakingService {
           turnStartedAt: gameState.turnStartedAt,
         });
 
+        // Start server authoritative 30s turn timer
+        if (typeof onTurnTimerTrigger === 'function') {
+          onTurnTimerTrigger(gameState.gameId, gameState.turnNumber || 1, gameState.turnTimeLimit || 30);
+        }
+
+        const opponentData = assignedPlayers.find((p) => p.userId !== player.userId);
+
         return {
           matched: true,
           gameId: gameState.gameId,
           gameState,
-          opponent: {
-            userId: waitingPlayer.userId,
-            username: waitingPlayer.username,
-            isBot: false,
-            color: 'GREEN',
-          },
+          opponent: opponentData
+            ? {
+                userId: opponentData.userId,
+                username: opponentData.username || opponentData.userId,
+                isBot: false,
+                color: opponentData.color,
+              }
+            : undefined,
         };
       }
 
-      // ----------------------------------------------------
-      // NO WAITING PLAYER: PUSH TO QUEUE & START BOT TIMER
-      // ----------------------------------------------------
+      // 3. Not enough players yet: push to queue and start bot fallback timer
       const newEntry: QueuedPlayer = {
         userId: player.userId,
         socketId: player.socketId,
         username: player.username || player.userId,
         queuedAt: Date.now(),
+        maxPlayers,
+        stake: player.stake,
       };
 
-      await redisService.rpush(this.QUEUE_KEY, JSON.stringify(newEntry));
+      await redisService.rpush(qKey, JSON.stringify(newEntry));
 
       // Emit searching confirmation
       const fallbackSeconds = env.ludoBotFallbackSeconds || 7;
       io.to(player.socketId).emit('ludo:match_searching', {
         mode: 'CLASSIC',
+        maxPlayers,
         fallbackSeconds,
       });
 
       // Schedule Bot Fallback Timer
       this.clearFallbackTimer(player.userId);
       const timer = setTimeout(async () => {
-        await this.handleBotFallback(player.userId, io, onBotTurnTrigger);
+        await this.handleBotFallback(player.userId, maxPlayers, io, onBotTurnTrigger, onTurnTimerTrigger);
       }, fallbackSeconds * 1000);
 
       this.fallbackTimers.set(player.userId, timer);
@@ -242,57 +255,77 @@ export class LudoMatchmakingService {
   }
 
   /**
-   * Trigger fallback match against a Smart Bot when no human player is found within timeout.
+   * Trigger fallback match against Smart Bot(s) when waiting time exceeds threshold.
    */
   public static async handleBotFallback(
     userId: string,
+    maxPlayers: number,
     io: SocketIOServer,
-    onBotTurnTrigger?: (gameId: string) => void
+    onBotTurnTrigger?: (gameId: string) => void,
+    onTurnTimerTrigger?: (gameId: string, turnNumber: number, timeLimit: number) => void
   ): Promise<MatchmakingResult | null> {
+    const qKey = this.getQueueKey(maxPlayers);
     let lockRes = null;
     try {
       lockRes = await redisLockService.acquireLock(this.LOCK_KEY, 4000);
     } catch {}
 
     try {
-      const currentQueue = await this.getQueue();
+      const currentQueue = await this.getQueue(maxPlayers);
       const queuedPlayer = currentQueue.find((p) => p.userId === userId);
 
-      // If player already matched with a human or cancelled, abort
+      // If player already matched or cancelled, abort
       if (!queuedPlayer) {
         return null;
       }
 
-      // Remove player from Redis queue
-      const remaining = currentQueue.filter((p) => p.userId !== userId);
-      await redisService.del(this.QUEUE_KEY);
+      // Collect all waiting humans in this queue (up to maxPlayers)
+      const waitingHumans = currentQueue.slice(0, maxPlayers);
+      const matchedUserIds = new Set(waitingHumans.map((p) => p.userId));
+
+      // Remove from Redis queue
+      const remaining = currentQueue.filter((p) => !matchedUserIds.has(p.userId));
+      await redisService.del(qKey);
       for (const qp of remaining) {
-        await redisService.rpush(this.QUEUE_KEY, JSON.stringify(qp));
+        await redisService.rpush(qKey, JSON.stringify(qp));
       }
 
-      this.clearFallbackTimer(userId);
+      for (const h of waitingHumans) {
+        this.clearFallbackTimer(h.userId);
+      }
 
-      // Create new Classic Ludo match with BOT opponent
+      // Construct game players (Humans + Bots up to maxPlayers)
       const initialGame = LudoGameEngine.createGame({ mode: 'CLASSIC' });
+      const finalPlayers: LudoPlayer[] = [];
 
-      const humanTokens = LudoTokenService.createPlayerTokens(queuedPlayer.userId, 'RED');
-      const humanPlayer: LudoPlayer = {
-        playerId: queuedPlayer.userId,
-        userId: queuedPlayer.userId,
-        username: queuedPlayer.username || queuedPlayer.userId,
-        color: 'RED',
-        tokens: humanTokens,
-        isConnected: true,
-        playerType: 'HUMAN',
-        missedTurns: 0,
-        isDisqualified: false,
-      };
+      // 1. Add human players
+      for (let i = 0; i < waitingHumans.length; i++) {
+        const h = waitingHumans[i];
+        const color = ALL_LUDO_COLORS[i];
+        finalPlayers.push({
+          playerId: h.userId,
+          userId: h.userId,
+          username: h.username || h.userId,
+          color,
+          tokens: LudoTokenService.createPlayerTokens(h.userId, color),
+          isConnected: true,
+          playerType: 'HUMAN',
+          missedTurns: 0,
+          isDisqualified: false,
+        });
+      }
 
-      const botPlayer = LudoBotService.createBotPlayer('GREEN', 'MEDIUM');
+      // 2. Fill remaining slots with Smart Bots
+      const neededBots = maxPlayers - waitingHumans.length;
+      for (let b = 0; b < neededBots; b++) {
+        const botColor = ALL_LUDO_COLORS[waitingHumans.length + b];
+        const botPlayer = LudoBotService.createBotPlayer(botColor, 'MEDIUM');
+        finalPlayers.push(botPlayer);
+      }
 
       let gameState: LudoGameState = {
         ...initialGame,
-        players: [humanPlayer, botPlayer],
+        players: finalPlayers,
         currentPlayerId: queuedPlayer.userId,
       };
 
@@ -301,32 +334,33 @@ export class LudoMatchmakingService {
 
       const room = `ludo:game:${gameState.gameId}`;
 
-      // Join player's socket to room
-      const socket = io.sockets.sockets.get(queuedPlayer.socketId);
-      if (socket) socket.join(room);
+      // Join sockets and notify all human participants
+      for (const h of waitingHumans) {
+        const socket = io.sockets.sockets.get(h.socketId);
+        if (socket) socket.join(room);
 
-      // Emit bot_joined & match_found events
-      io.to(queuedPlayer.socketId).emit('ludo:bot_joined', {
-        gameId: gameState.gameId,
-        bot: {
-          playerId: botPlayer.playerId,
-          username: botPlayer.username,
-          color: botPlayer.color,
-          playerType: 'BOT',
-        },
-      });
+        const primaryOpponent = finalPlayers.find((p) => p.userId !== h.userId);
 
-      io.to(queuedPlayer.socketId).emit('ludo:match_found', {
-        gameId: gameState.gameId,
-        gameMode: 'CLASSIC',
-        gameState,
-        opponent: {
-          userId: botPlayer.playerId,
-          username: botPlayer.username,
-          isBot: true,
-          color: 'GREEN',
-        },
-      });
+        io.to(h.socketId).emit('ludo:bot_joined', {
+          gameId: gameState.gameId,
+          bots: finalPlayers.filter((p) => p.playerType === 'BOT'),
+        });
+
+        io.to(h.socketId).emit('ludo:match_found', {
+          gameId: gameState.gameId,
+          gameMode: 'CLASSIC',
+          gameState,
+          maxPlayers,
+          opponent: primaryOpponent
+            ? {
+                userId: primaryOpponent.playerId,
+                username: primaryOpponent.username,
+                isBot: primaryOpponent.playerType === 'BOT',
+                color: primaryOpponent.color,
+              }
+            : undefined,
+        });
+      }
 
       io.to(room).emit('ludo:game_started', {
         gameId: gameState.gameId,
@@ -335,21 +369,28 @@ export class LudoMatchmakingService {
         turnStartedAt: gameState.turnStartedAt,
       });
 
-      // If initial turn belongs to BOT, trigger bot turn
-      if (gameState.currentPlayerId === botPlayer.playerId && typeof onBotTurnTrigger === 'function') {
+      // If initial turn belongs to a BOT, trigger bot turn. Otherwise start turn timer for human.
+      const currentActive = finalPlayers.find((p) => p.playerId === gameState.currentPlayerId);
+      if (currentActive?.playerType === 'BOT' && typeof onBotTurnTrigger === 'function') {
         onBotTurnTrigger(gameState.gameId);
+      } else if (typeof onTurnTimerTrigger === 'function') {
+        onTurnTimerTrigger(gameState.gameId, gameState.turnNumber || 1, gameState.turnTimeLimit || 30);
       }
+
+      const primaryOpp = finalPlayers.find((p) => p.userId !== userId);
 
       return {
         matched: true,
         gameId: gameState.gameId,
         gameState,
-        opponent: {
-          userId: botPlayer.playerId,
-          username: botPlayer.username || 'Smart Bot',
-          isBot: true,
-          color: 'GREEN',
-        },
+        opponent: primaryOpp
+          ? {
+              userId: primaryOpp.playerId,
+              username: primaryOpp.username || primaryOpp.playerId,
+              isBot: primaryOpp.playerType === 'BOT',
+              color: primaryOpp.color,
+            }
+          : undefined,
       };
     } finally {
       if (lockRes && lockRes.acquired && lockRes.token) {
@@ -359,7 +400,7 @@ export class LudoMatchmakingService {
   }
 
   /**
-   * Cancel matchmaking and remove player from queue.
+   * Cancel matchmaking and remove player from both 2P and 4P queues.
    */
   public static async cancelMatch(userId: string): Promise<{ cancelled: boolean }> {
     let lockRes = null;
@@ -369,20 +410,24 @@ export class LudoMatchmakingService {
 
     try {
       this.clearFallbackTimer(userId);
+      let wasCancelled = false;
 
-      const currentQueue = await this.getQueue();
-      const isPresent = currentQueue.some((p) => p.userId === userId);
+      for (const maxP of [2, 4]) {
+        const qKey = this.getQueueKey(maxP);
+        const currentQueue = await this.getQueue(maxP);
+        const isPresent = currentQueue.some((p) => p.userId === userId);
 
-      if (isPresent) {
-        const remaining = currentQueue.filter((p) => p.userId !== userId);
-        await redisService.del(this.QUEUE_KEY);
-        for (const qp of remaining) {
-          await redisService.rpush(this.QUEUE_KEY, JSON.stringify(qp));
+        if (isPresent) {
+          const remaining = currentQueue.filter((p) => p.userId !== userId);
+          await redisService.del(qKey);
+          for (const qp of remaining) {
+            await redisService.rpush(qKey, JSON.stringify(qp));
+          }
+          wasCancelled = true;
         }
-        return { cancelled: true };
       }
 
-      return { cancelled: false };
+      return { cancelled: wasCancelled };
     } finally {
       if (lockRes && lockRes.acquired && lockRes.token) {
         await redisLockService.releaseLock(this.LOCK_KEY, lockRes.token).catch(() => {});

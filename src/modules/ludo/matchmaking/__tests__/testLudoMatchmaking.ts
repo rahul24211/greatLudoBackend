@@ -30,6 +30,8 @@ describe('Ludo Matchmaking Service Tests', () => {
   beforeEach(async () => {
     // Clear matchmaking queue in Redis
     try {
+      await redisService.del('ludo:queue:classic:2p');
+      await redisService.del('ludo:queue:classic:4p');
       await redisService.del('ludo:queue:classic');
     } catch {}
   });
@@ -112,6 +114,7 @@ describe('Ludo Matchmaking Service Tests', () => {
     // Trigger bot fallback directly
     const fallbackRes = await LudoMatchmakingService.handleBotFallback(
       'solo_human',
+      2,
       mockIo as any
     );
 

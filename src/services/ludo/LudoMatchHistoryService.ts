@@ -1,5 +1,5 @@
 import sequelize from '../../config/database';
-import { LudoMatch, LudoMatchPlayer } from '../../models';
+import { LudoMatch, LudoMatchPlayer, User, Profile } from '../../models';
 import { LudoGameState } from '../../game-engine/ludo/LudoTypes';
 
 export interface PlayerHistoryResult {
@@ -62,16 +62,65 @@ export class LudoMatchHistoryService {
       // Create LudoMatchPlayer records for all participants
       for (const player of gameState.players) {
         const isWinner = player.playerId === gameState.winner;
+        const participantUserId = player.userId || player.playerId;
+
         await LudoMatchPlayer.create(
           {
             matchId: match.id,
-            userId: player.userId || player.playerId,
+            userId: participantUserId,
             color: player.color,
             playerType: player.playerType || 'HUMAN',
             finalPosition: isWinner ? 1 : null,
           },
           { transaction }
         );
+
+        // Update User & Profile telemetry stats for registered users
+        if (participantUserId && player.playerType !== 'BOT') {
+          try {
+            const userRecord = await User.findByPk(participantUserId, { transaction });
+            if (userRecord) {
+              const earnedXP = isWinner ? 100 : 25;
+              const newXP = (userRecord.xp || 0) + earnedXP;
+              const newLevel = Math.max(1, Math.floor(newXP / 1000) + 1);
+
+              await userRecord.update(
+                {
+                  xp: newXP,
+                  level: newLevel,
+                },
+                { transaction }
+              );
+
+              const profileRecord = await Profile.findOne({
+                where: { userId: participantUserId },
+                transaction,
+              });
+
+              if (profileRecord) {
+                const newWins = (profileRecord.wins || 0) + (isWinner ? 1 : 0);
+                const newLosses = (profileRecord.losses || 0) + (isWinner ? 0 : 1);
+                const newTotal = newWins + newLosses;
+                const newWinRate = newTotal > 0 ? Math.round((newWins / newTotal) * 100) : 0;
+
+                await profileRecord.update(
+                  {
+                    wins: newWins,
+                    losses: newLosses,
+                    totalMatches: newTotal,
+                    winRate: newWinRate,
+                  },
+                  { transaction }
+                );
+              }
+            }
+          } catch (updateErr) {
+            console.warn(
+              `⚠️ Non-fatal: error updating player telemetry for user ${participantUserId}:`,
+              updateErr
+            );
+          }
+        }
       }
 
       await transaction.commit();
