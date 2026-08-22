@@ -4,8 +4,7 @@ import { Server as SocketIOServer } from 'socket.io';
 import { io as ClientSocket, Socket as ClientSocketType } from 'socket.io-client';
 import http from 'node:http';
 import { registerLudoSocketHandlers, saveAuthoritativeState } from '../ludoSocketHandler';
-import { LudoGameEngine } from '../../game-engine/ludo/LudoGameEngine';
-import { LudoGameState } from '../../game-engine/ludo/types';
+import { LudoGameState } from '../../game-engine/ludo/LudoTypes';
 import { closeRedis } from '../../config/redis';
 
 test('Ludo Timeout Disqualification & Multi-Game Background Flow Tests', async (t) => {
@@ -55,9 +54,15 @@ test('Ludo Timeout Disqualification & Multi-Game Background Flow Tests', async (
     const gameId = `test_disqualify_${Date.now()}`;
     const initialGameState: LudoGameState = {
       gameId,
+      roomId: gameId,
       mode: 'CLASSIC',
       status: 'ACTIVE',
-      boardConfig: { totalCells: 52, homeStretchCells: 6, tokensPerPlayer: 4, safeCellPositions: [8, 21, 34, 47] },
+      diceValue: null,
+      diceRolled: false,
+      moveNumber: 0,
+      winner: null,
+      currentPlayerId: 'user_player_2',
+      lastAction: null,
       players: [
         {
           playerId: 'user_player_1',
@@ -80,17 +85,12 @@ test('Ludo Timeout Disqualification & Multi-Game Background Flow Tests', async (
           missedTurns: 0,
         },
       ],
-      currentPlayerId: 'user_player_2',
-      diceValue: null,
-      diceRolled: false,
       turnNumber: 5,
       turnStartedAt: Date.now(),
       turnTimeLimit: 30,
-      createdAt: Date.now(),
-      version: 1,
     };
 
-    await saveAuthoritativeState(initialGameState as any);
+    await saveAuthoritativeState(initialGameState);
 
     // Attempt to resume as disqualified user_player_1
     const resumeErrorPromise = new Promise<{ code: string; message: string }>((resolve) => {

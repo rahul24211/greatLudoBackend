@@ -10,5 +10,6 @@ export * from './LudoTurnService';
 export * from './LudoCaptureService';
 export * from './LudoTurnResolutionService';
 export * from './LudoWinnerService';
+export * from './Ludo30MovesScoringService';
 export * from './LudoGameActions';
 export * from './LudoGameEngine';

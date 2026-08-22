@@ -17,11 +17,15 @@ export class LudoBotService {
   public static createBotPlayer(
     color: LudoColor,
     difficulty: LudoBotDifficulty = 'MEDIUM',
-    customBotId?: string
+    customBotId?: string,
+    mode: string = 'CLASSIC'
   ): LudoPlayer {
     const randomSuffix = crypto.randomBytes(3).toString('hex');
     const botId = customBotId || `bot_${color.toLowerCase()}_${randomSuffix}`;
-    const botTokens = LudoTokenService.createPlayerTokens(botId, color);
+    const is30Moves = mode === 'MOVES_30';
+    const botTokens = is30Moves
+      ? LudoTokenService.create30MovesPlayerTokens(botId, color)
+      : LudoTokenService.createPlayerTokens(botId, color);
 
     const difficultyNames: Record<LudoBotDifficulty, string> = {
       EASY: 'Beginner Bot',
@@ -40,6 +44,9 @@ export class LudoBotService {
       botDifficulty: difficulty,
       missedTurns: 0,
       isDisqualified: false,
+      score: is30Moves ? 0 : undefined,
+      movesRemaining: is30Moves ? 30 : undefined,
+      movesUsed: is30Moves ? 0 : undefined,
     };
   }
 

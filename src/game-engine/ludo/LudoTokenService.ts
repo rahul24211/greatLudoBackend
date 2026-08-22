@@ -1,12 +1,12 @@
 import { LudoColor, LudoToken, LudoTokenState } from './LudoTypes';
-import { TOKENS_PER_PLAYER, LUDO_COLORS } from './LudoConstants';
+import { TOKENS_PER_PLAYER, LUDO_COLORS, COLOR_START_POSITIONS } from './LudoConstants';
 
 export const HOME_POSITION = -1;
 export const FINISHED_POSITION = 99;
 
 export class LudoTokenService {
   /**
-   * Create 4 initial tokens for a player in the HOME state.
+   * Create 4 initial tokens for a player in the HOME state (for Classic Mode).
    */
   public static createPlayerTokens(playerId: string, color: LudoColor): LudoToken[] {
     if (!playerId || typeof playerId !== 'string') {
@@ -24,6 +24,31 @@ export class LudoTokenService {
         color,
         state: 'HOME',
         position: HOME_POSITION,
+      });
+    }
+    return tokens;
+  }
+
+  /**
+   * Create 4 initial active tokens for 30-Moves Skill Mode (tokens start unlocked on board).
+   */
+  public static create30MovesPlayerTokens(playerId: string, color: LudoColor): LudoToken[] {
+    if (!playerId || typeof playerId !== 'string') {
+      throw new Error('Valid playerId is required to create tokens');
+    }
+    if (!LUDO_COLORS.includes(color)) {
+      throw new Error(`Invalid Ludo color: ${color}`);
+    }
+
+    const startPos = COLOR_START_POSITIONS[color] ?? 1;
+    const tokens: LudoToken[] = [];
+    for (let i = 1; i <= TOKENS_PER_PLAYER; i++) {
+      tokens.push({
+        tokenId: `${playerId}-token-${i}`,
+        playerId,
+        color,
+        state: 'ACTIVE',
+        position: startPos,
       });
     }
     return tokens;

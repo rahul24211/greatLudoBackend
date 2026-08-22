@@ -79,7 +79,13 @@ export class LudoTurnService {
       const nextIndex = (currentIndex + i) % state.players.length;
       const candidate = state.players[nextIndex];
       if (candidate && !candidate.isDisqualified) {
-        return candidate;
+        if (state.mode === 'MOVES_30' && typeof candidate.movesRemaining === 'number') {
+          if (candidate.movesRemaining > 0) {
+            return candidate;
+          }
+        } else {
+          return candidate;
+        }
       }
     }
 

@@ -4,6 +4,7 @@ import { isOriginAllowed } from '../app';
 import { setupSocketRedisAdapter } from '../config/socketRedis';
 import { verifyAccessToken } from '../utils/tokenUtils';
 import { registerLudoSocketHandlers } from './ludoSocketHandler';
+import { registerSnakeLadderSocketHandlers } from './snakeLadderSocketHandler';
 
 let ioInstance: SocketIOServer | null = null;
 
@@ -54,6 +55,9 @@ export const initializeSocket = (httpServer: HttpServer): SocketIOServer => {
 
     // Register Ludo Game Engine Socket Event Handlers
     registerLudoSocketHandlers(io, socket);
+
+    // Register Snake & Ladder Socket Event Handlers
+    registerSnakeLadderSocketHandlers(io, socket);
 
     // Private Room handlers
     socket.on('join_room', (roomId: string) => {

@@ -1,4 +1,5 @@
 import { LudoGameState, LudoPlayer, LudoGameResult } from './LudoTypes';
+import { Ludo30MovesScoringService } from './Ludo30MovesScoringService';
 
 export class LudoWinnerService {
   /**
@@ -12,7 +13,9 @@ export class LudoWinnerService {
   }
 
   /**
-   * Find the winner from game state deterministically (first player in game order to finish 4 tokens).
+   * Find the winner from game state deterministically.
+   * For MOVES_30 mode, uses Ludo30MovesScoringService (highest score).
+   * For CLASSIC mode, first player to finish 4 tokens.
    */
   public static getWinner(gameState: LudoGameState): LudoPlayer | null {
     if (!gameState || !Array.isArray(gameState.players)) {
@@ -24,7 +27,19 @@ export class LudoWinnerService {
       return gameState.players.find((p) => p.playerId === gameState.winner) || null;
     }
 
-    // Otherwise evaluate players in game order
+    // 30 Moves mode winner evaluation: ONLY evaluate when game is finished
+    if (gameState.mode === 'MOVES_30') {
+      const isFinished =
+        Ludo30MovesScoringService.haveAllPlayersExhaustedMoves(gameState) ||
+        gameState.players.some((p) => p.tokens && p.tokens.length === 4 && p.tokens.every((t) => t.state === 'FINISHED'));
+
+      if (!isFinished) {
+        return null;
+      }
+      return Ludo30MovesScoringService.get30MovesWinner(gameState);
+    }
+
+    // Otherwise evaluate players in game order (Classic mode: 4 tokens in HOME)
     for (const player of gameState.players) {
       if (LudoWinnerService.hasPlayerWon(player)) {
         return player;
@@ -42,6 +57,14 @@ export class LudoWinnerService {
     if (gameState.status === 'FINISHED' || gameState.winner !== null) {
       return true;
     }
+
+    if (gameState.mode === 'MOVES_30') {
+      return (
+        Ludo30MovesScoringService.haveAllPlayersExhaustedMoves(gameState) ||
+        gameState.players.some((p) => p.tokens && p.tokens.length === 4 && p.tokens.every((t) => t.state === 'FINISHED'))
+      );
+    }
+
     return LudoWinnerService.getWinner(gameState) !== null;
   }
 

@@ -19,6 +19,7 @@ import { LudoGameActions } from './LudoGameActions';
 import { LudoCaptureService } from './LudoCaptureService';
 import { LudoTurnResolutionService } from './LudoTurnResolutionService';
 import { LudoWinnerService } from './LudoWinnerService';
+import { Ludo30MovesScoringService } from './Ludo30MovesScoringService';
 
 export class LudoGameEngine {
   /**
@@ -37,20 +38,33 @@ export class LudoGameEngine {
     mode?: LudoGameMode;
     playerIds?: string[];
     colors?: LudoColor[];
+    maxMovesPerPlayer?: number;
   }): LudoGameState {
     const gameId = params?.gameId || `game_${Date.now()}`;
     const roomId = params?.roomId || `room_${Date.now()}`;
     const mode = params?.mode || 'CLASSIC';
     const playerIds = params?.playerIds || ['p1', 'p2'];
     const colors = params?.colors || (LUDO_COLORS.slice(0, playerIds.length) as LudoColor[]);
+    const is30Moves = mode === 'MOVES_30';
+    const maxMoves = params?.maxMovesPerPlayer || (is30Moves ? 30 : undefined);
 
-    const players: LudoPlayer[] = playerIds.map((pid, idx) => ({
-      playerId: pid,
-      userId: `user_${pid}`,
-      color: colors[idx] || LUDO_COLORS[idx % 4],
-      tokens: LudoTokenService.createPlayerTokens(pid, colors[idx] || LUDO_COLORS[idx % 4]),
-      isConnected: true,
-    }));
+    const players: LudoPlayer[] = playerIds.map((pid, idx) => {
+      const pColor = colors[idx] || LUDO_COLORS[idx % 4];
+      const tokens = is30Moves
+        ? LudoTokenService.create30MovesPlayerTokens(pid, pColor)
+        : LudoTokenService.createPlayerTokens(pid, pColor);
+
+      return {
+        playerId: pid,
+        userId: `user_${pid}`,
+        color: pColor,
+        tokens,
+        isConnected: true,
+        score: is30Moves ? 0 : undefined,
+        movesRemaining: is30Moves ? maxMoves : undefined,
+        movesUsed: is30Moves ? 0 : undefined,
+      };
+    });
 
     return {
       gameId,
@@ -63,6 +77,7 @@ export class LudoGameEngine {
       diceRolled: false,
       moveNumber: 0,
       winner: null,
+      maxMovesPerPlayer: maxMoves,
       lastAction: {
         type: 'GAME_CREATED',
         timestamp: Date.now(),
@@ -151,6 +166,10 @@ export class LudoGameEngine {
       return { success: false, reason: `Player ${playerId} does not exist in game` };
     }
 
+    if (gameState.mode === 'MOVES_30' && typeof player.movesRemaining === 'number' && player.movesRemaining <= 0) {
+      return { success: false, reason: `Player ${playerId} has exhausted all 30 moves` };
+    }
+
     const token = player.tokens.find((t) => t.tokenId === tokenId);
     if (!token) {
       return { success: false, reason: `Token ${tokenId} does not belong to player ${playerId}` };
@@ -192,10 +211,23 @@ export class LudoGameEngine {
 
     const updatedPlayerTokens = LudoTokenService.updateTokensList(player.tokens, updatedToken);
 
-    // Rebuild players list with updated player tokens
-    let tempPlayers = gameState.players.map((p) =>
-      p.playerId === playerId ? { ...p, tokens: updatedPlayerTokens } : { ...p }
-    );
+    // Rebuild players list with updated player tokens & apply 30-moves point scoring
+    let tempPlayers = gameState.players.map((p) => {
+      if (p.playerId === playerId) {
+        if (gameState.mode === 'MOVES_30') {
+          const stepsMoved = moveResult.stepsMoved || gameState.diceValue || 0;
+          const reachesFinish = moveResult.toCategory === 'FINISHED';
+          const { updatedPlayer } = Ludo30MovesScoringService.applyMoveScore(
+            { ...p, tokens: updatedPlayerTokens },
+            stepsMoved,
+            reachesFinish
+          );
+          return updatedPlayer;
+        }
+        return { ...p, tokens: updatedPlayerTokens };
+      }
+      return { ...p };
+    });
 
     // Collect all tokens across all players for capture calculation
     const allTokens = tempPlayers.flatMap((p) => p.tokens);
@@ -207,13 +239,45 @@ export class LudoGameEngine {
       moveResult.toPosition
     );
 
-    // If tokens were captured, update affected players' tokens in state
+    // If tokens were captured, update affected players' tokens in state & apply 30-moves capture scoring
     if (captureResult.captured) {
       const capturedMap = new Map(captureResult.updatedTokens.map((t) => [t.tokenId, t]));
-      tempPlayers = tempPlayers.map((p) => ({
-        ...p,
-        tokens: p.tokens.map((t) => capturedMap.get(t.tokenId) || t),
-      }));
+      const hunterId = playerId;
+
+      tempPlayers = tempPlayers.map((p) => {
+        const playerTokens = p.tokens.map((t) => capturedMap.get(t.tokenId) || t);
+        const capturedFromThisPlayer = p.tokens.filter((t) => captureResult.capturedTokenIds.includes(t.tokenId)).length;
+
+        let updatedPlayerObj: LudoPlayer = { ...p, tokens: playerTokens };
+
+        // If 30-moves mode, apply capture bonus to hunter and penalty to victim
+        if (gameState.mode === 'MOVES_30' && capturedFromThisPlayer > 0) {
+          if (p.playerId !== hunterId) {
+            const hunter = tempPlayers.find((tp) => tp.playerId === hunterId) || p;
+            const { updatedVictim } = Ludo30MovesScoringService.applyCaptureScore(
+              hunter,
+              updatedPlayerObj,
+              capturedFromThisPlayer
+            );
+            updatedPlayerObj = updatedVictim;
+          }
+        }
+        return updatedPlayerObj;
+      });
+
+      // Apply hunter bonus
+      if (gameState.mode === 'MOVES_30') {
+        const totalCaptured = captureResult.capturedTokenIds.length;
+        tempPlayers = tempPlayers.map((p) => {
+          if (p.playerId === hunterId) {
+            return {
+              ...p,
+              score: (p.score ?? 0) + Ludo30MovesScoringService.BONUS_POINTS_CAPTURE * totalCaptured,
+            };
+          }
+          return p;
+        });
+      }
     }
 
     // Build intermediate state with moved tokens & captures applied

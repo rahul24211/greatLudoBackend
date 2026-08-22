@@ -1,13 +1,41 @@
-node_modules
-dist
+# Dependencies
+node_modules/
+
+# Production Build
+dist/
+build/
+*.tsbuildinfo
+
+# Environment & Secrets (CRITICAL SECURITY)
 .env
 .env.*
+.env.local
+.env.production
+.env.development
+*.pem
+*.key
+*.cert
+secrets/
 !.env.example
+
+# Logs
+logs/
 *.log
-.DS_Store
+
+# Databases & SQLite Storage
 *.sqlite
 *.sqlite3
 *.sqlite-journal
-src/scratch/
-CLASSIC_LUDO_RULES.md
+*.db
+data/
 
+# Scratch & Internal Docs
+src/scratch/
+scratch/
+CLASSIC_LUDO_RULES.md
+AGENTS.md
+
+# OS & IDE
+.DS_Store
+.idea/
+.vscode/

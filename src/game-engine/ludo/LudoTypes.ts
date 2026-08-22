@@ -4,7 +4,7 @@ export type LudoTokenState = 'HOME' | 'ACTIVE' | 'FINISHED';
 
 export type LudoGameStatus = 'WAITING' | 'ACTIVE' | 'FINISHED';
 
-export type LudoGameMode = 'CLASSIC' | 'QUICK' | 'TEAM' | string;
+export type LudoGameMode = 'CLASSIC' | 'MOVES_30' | 'QUICK' | 'TEAM' | string;
 
 export enum LudoPositionCategory {
   HOME = 'HOME',
@@ -131,6 +131,9 @@ export interface LudoPlayer {
   botDifficulty?: LudoBotDifficulty;
   isHost?: boolean;
   isReady?: boolean;
+  score?: number;
+  movesRemaining?: number;
+  movesUsed?: number;
 }
 
 export interface LudoLastAction {
@@ -161,6 +164,7 @@ export interface LudoGameState {
   turnStartedAt?: number;
   turnTimeLimit?: number;
   finishedAt?: number;
+  maxMovesPerPlayer?: number;
 }
 
 export interface LudoConfig {
