@@ -7,6 +7,7 @@ import {
   Tournament,
   League,
   Leaderboard,
+  Wallet,
 } from '../models';
 
 export const runSeeders = async (): Promise<void> => {
@@ -74,11 +75,42 @@ export const runSeeders = async (): Promise<void> => {
           bio: 'Ludo enthusiast & blitz specialist ⚡',
           rankTitle: 'Gold Roller',
           totalMatches: 45,
-          wins: 28,
-          losses: 17,
-          winRate: 62.22,
+          wins: 30,
+          losses: 15,
+          winRate: 66.67,
           highestWinStreak: 6,
           currentWinStreak: 2,
+        },
+      });
+    }
+
+    // Seed Wallets for users
+    if (user1) {
+      await Wallet.findOrCreate({
+        where: { userId: user1.id },
+        defaults: {
+          userId: user1.id,
+          depositBalance: 2500,
+          winningsBalance: 5000,
+          bonusBalance: 500,
+          totalDeposited: 3000,
+          totalWithdrawn: 1000,
+          totalWon: 7500,
+        },
+      });
+    }
+
+    if (user2) {
+      await Wallet.findOrCreate({
+        where: { userId: user2.id },
+        defaults: {
+          userId: user2.id,
+          depositBalance: 500,
+          winningsBalance: 1200,
+          bonusBalance: 100,
+          totalDeposited: 1000,
+          totalWithdrawn: 200,
+          totalWon: 1800,
         },
       });
     }

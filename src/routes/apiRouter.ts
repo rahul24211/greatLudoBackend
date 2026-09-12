@@ -4,6 +4,7 @@ import authRoutes from '../modules/auth/authRoutes';
 import adminRoutes from '../modules/admin/adminRoutes';
 import matchRoutes from '../modules/matches/matchRoutes';
 import leaderboardRoutes from '../modules/leaderboard/leaderboardRoutes';
+import walletRoutes from '../modules/wallet/walletRoutes';
 
 const apiRouter = Router();
 
@@ -12,5 +13,7 @@ apiRouter.use('/auth', authRoutes);
 apiRouter.use('/admin', adminRoutes);
 apiRouter.use('/matches', matchRoutes);
 apiRouter.use('/leaderboard', leaderboardRoutes);
+apiRouter.use('/wallet', walletRoutes);
 
 export default apiRouter;
+

@@ -17,7 +17,9 @@ export const sequelize = new Sequelize(env.dbName, env.dbUser, env.dbPassword, {
 export const connectDatabase = async (): Promise<boolean> => {
   try {
     await sequelize.authenticate();
-    console.log('✅ MySQL Database connection established successfully via Sequelize.');
+    require('../models');
+    await sequelize.sync();
+    console.log('✅ MySQL Database connection established & synchronized successfully via Sequelize.');
     return true;
   } catch (error) {
     console.warn('⚠️ Could not connect to MySQL server on port 3306. Initializing SQLite local fallback...');

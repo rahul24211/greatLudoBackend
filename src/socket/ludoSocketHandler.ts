@@ -15,6 +15,7 @@ import { verifyAccessToken } from '../utils/tokenUtils';
 import { isAdminRole, hasPermission } from '../modules/admin/AdminPermissions';
 import { User } from '../models';
 import env from '../config/env';
+import WalletService from '../modules/wallet/walletService';
 
 // In-memory fallback map for environments without Redis
 export const activeLudoGames = new Map<string, LudoGameState>();
@@ -576,6 +577,18 @@ export async function executeBotTurn(io: SocketIOServer, gameId: string): Promis
             clearGameTurnTimer(gameId);
             const winnerObj = moveRes.gameState!.players.find((p) => p.playerId === moveRes.winnerId);
 
+            if (winnerObj && winnerObj.playerType !== 'BOT' && moveRes.winnerId) {
+              const prize =
+                moveRes.gameState!.prizePool ||
+                (moveRes.gameState!.entryFee || 100) * moveRes.gameState!.players.length * 0.9;
+              WalletService.creditGameWin(
+                moveRes.winnerId,
+                prize,
+                gameId,
+                moveRes.gameState!.roomCode
+              ).catch((err) => console.error('Failed to credit prize pool:', err));
+            }
+
             LudoMatchHistoryService.createMatchResult(moveRes.gameState!).catch((err) => {
               console.error(`⚠️ Failed to persist final match result for game ${gameId}:`, err);
             });
@@ -985,6 +998,24 @@ export function registerLudoSocketHandlers(io: SocketIOServer, socket: Socket): 
 
         await saveAuthoritativeState(updatedState);
 
+        // Deduct entry fee from player wallets
+        if (updatedState.entryFee && updatedState.entryFee > 0) {
+          for (const p of updatedState.players) {
+            if (p.playerType !== 'BOT') {
+              try {
+                await WalletService.deductGameEntryFee(
+                  p.playerId,
+                  updatedState.entryFee,
+                  targetGameId,
+                  updatedState.roomCode
+                );
+              } catch (wErr) {
+                console.warn(`[Wallet] Failed to deduct entry fee for ${p.playerId}:`, wErr);
+              }
+            }
+          }
+        }
+
         const room = `ludo:game:${targetGameId}`;
         io.to(room).emit('ludo:game_started', {
           gameId: targetGameId,
@@ -1219,6 +1250,18 @@ export function registerLudoSocketHandlers(io: SocketIOServer, socket: Socket): 
             const winnerObj = moveRes.gameState!.players.find(
               (p: LudoPlayer) => p.playerId === moveRes.winnerId
             );
+
+            if (winnerObj && winnerObj.playerType !== 'BOT' && moveRes.winnerId) {
+              const prize =
+                moveRes.gameState!.prizePool ||
+                (moveRes.gameState!.entryFee || 100) * moveRes.gameState!.players.length * 0.9;
+              WalletService.creditGameWin(
+                moveRes.winnerId,
+                prize,
+                data.gameId,
+                moveRes.gameState!.roomCode
+              ).catch((err) => console.error('Failed to credit prize pool:', err));
+            }
 
             // Persist permanent match result in MySQL asynchronously
             LudoMatchHistoryService.createMatchResult(moveRes.gameState!).catch((err) => {

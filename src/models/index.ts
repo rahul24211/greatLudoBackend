@@ -91,6 +91,24 @@ LudoMatchPlayer.belongsTo(LudoMatch, { foreignKey: 'matchId', as: 'match' });
 
 import AdminNotification from './AdminNotification';
 import AdminNotificationRead from './AdminNotificationRead';
+import Wallet from './Wallet';
+import Transaction from './Transaction';
+import WithdrawalRequest from './WithdrawalRequest';
+
+// User & Wallet (1:1)
+User.hasOne(Wallet, { foreignKey: 'userId', as: 'wallet', constraints: false });
+Wallet.belongsTo(User, { foreignKey: 'userId', as: 'user', constraints: false });
+
+// User & Transaction (1:N)
+User.hasMany(Transaction, { foreignKey: 'userId', as: 'transactions', constraints: false });
+Transaction.belongsTo(User, { foreignKey: 'userId', as: 'user', constraints: false });
+
+Wallet.hasMany(Transaction, { foreignKey: 'walletId', as: 'transactions', constraints: false });
+Transaction.belongsTo(Wallet, { foreignKey: 'walletId', as: 'wallet', constraints: false });
+
+// User & WithdrawalRequest (1:N)
+User.hasMany(WithdrawalRequest, { foreignKey: 'userId', as: 'withdrawals', constraints: false });
+WithdrawalRequest.belongsTo(User, { foreignKey: 'userId', as: 'user', constraints: false });
 
 // AdminNotification & AdminNotificationRead (1:N)
 AdminNotification.hasMany(AdminNotificationRead, { foreignKey: 'notificationId', as: 'reads', onDelete: 'CASCADE' });
@@ -122,4 +140,7 @@ export {
   AuditLog,
   AdminNotification,
   AdminNotificationRead,
+  Wallet,
+  Transaction,
+  WithdrawalRequest,
 };
